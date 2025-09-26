@@ -55,9 +55,13 @@ public class ByzantineCityBlockGenerator {
     private final Random random;
     private Rectangle2D.Double buildableArea;
     private List<Road> currentRoads;
+    private double targetHouseArea;
+    private double houseAreaTolerance;
 
     private ByzantineCityBlockGenerator(long seed) {
         this.random = new Random(seed);
+        this.targetHouseArea = -1;
+        this.houseAreaTolerance = -1;
     }
 
     public static void main(String[] args) throws IOException {
@@ -129,6 +133,7 @@ public class ByzantineCityBlockGenerator {
         List<Parcel> parcels = subdivideBlock(buildable, innerRoads);
         ensureParcelCount(parcels, 9);
         ensureMinimumAlleys(parcels, innerRoads);
+        analyzeParcelScales(parcels);
         this.currentRoads = innerRoads;
         ensureRequiredBuildingTypes(parcels);
         prepareParcelOrientations(parcels);
@@ -313,6 +318,13 @@ public class ByzantineCityBlockGenerator {
             }
             exhausted.add(candidate);
         }
+
+        if (innerRoads.isEmpty()) {
+            Parcel fallback = findLargestParcel(parcels);
+            if (fallback != null) {
+                forceCreateAlley(parcels, innerRoads, fallback);
+            }
+        }
     }
 
     private Parcel selectAlleyCandidate(List<Parcel> parcels, boolean first, List<Parcel> excluded) {
@@ -344,6 +356,66 @@ public class ByzantineCityBlockGenerator {
             }
         }
         return best;
+    }
+
+    private Parcel findLargestParcel(List<Parcel> parcels) {
+        Parcel largest = null;
+        double bestArea = Double.NEGATIVE_INFINITY;
+        for (Parcel parcel : parcels) {
+            double area = parcel.area();
+            if (area > bestArea) {
+                bestArea = area;
+                largest = parcel;
+            }
+        }
+        return largest;
+    }
+
+    private void forceCreateAlley(List<Parcel> parcels, List<Road> innerRoads, Parcel target) {
+        if (target == null) {
+            return;
+        }
+        Rectangle2D.Double rect = target.rect;
+        boolean vertical = rect.width >= rect.height;
+        double roadWidth = randomRange(ROAD_WIDTH_MIN, ROAD_WIDTH_MAX);
+        double minDepth = Math.max(MIN_PARCEL_SIZE * 0.75, 50);
+
+        Rectangle2D.Double first;
+        Rectangle2D.Double second;
+        Rectangle2D.Double roadRect;
+        if (vertical && rect.width > roadWidth + minDepth * 2) {
+            double splitX = rect.x + rect.width / 2.0;
+            double leftWidth = splitX - roadWidth / 2.0 - rect.x;
+            double rightWidth = rect.getMaxX() - (splitX + roadWidth / 2.0);
+            if (leftWidth < minDepth || rightWidth < minDepth) {
+                return;
+            }
+            first = new Rectangle2D.Double(rect.x, rect.y, leftWidth, rect.height);
+            second = new Rectangle2D.Double(splitX + roadWidth / 2.0, rect.y, rightWidth, rect.height);
+            roadRect = new Rectangle2D.Double(splitX - roadWidth / 2.0, rect.y, roadWidth, rect.height);
+        } else if (rect.height > roadWidth + minDepth * 2) {
+            double splitY = rect.y + rect.height / 2.0;
+            double topHeight = splitY - roadWidth / 2.0 - rect.y;
+            double bottomHeight = rect.getMaxY() - (splitY + roadWidth / 2.0);
+            if (topHeight < minDepth || bottomHeight < minDepth) {
+                return;
+            }
+            first = new Rectangle2D.Double(rect.x, rect.y, rect.width, topHeight);
+            second = new Rectangle2D.Double(rect.x, splitY + roadWidth / 2.0, rect.width, bottomHeight);
+            roadRect = new Rectangle2D.Double(rect.x, splitY - roadWidth / 2.0, rect.width, roadWidth);
+        } else {
+            return;
+        }
+
+        if (first.width < MIN_PARCEL_SIZE * 0.6 || first.height < MIN_PARCEL_SIZE * 0.6
+                || second.width < MIN_PARCEL_SIZE * 0.6 || second.height < MIN_PARCEL_SIZE * 0.6) {
+            return;
+        }
+
+        parcels.remove(target);
+        parcels.add(new Parcel(first));
+        parcels.add(new Parcel(second));
+        innerRoads.add(new Road(roadRect, roadWidth));
     }
 
     private boolean splitParcelWithRoad(List<Parcel> parcels, List<Road> innerRoads, Parcel target, boolean vertical) {
@@ -550,6 +622,44 @@ public class ByzantineCityBlockGenerator {
         return IMAGE_WIDTH - 2 * (MARGIN + PERIMETER_ROAD);
     }
 
+    private void analyzeParcelScales(List<Parcel> parcels) {
+        List<Double> rectangularAreas = new ArrayList<Double>();
+        List<Double> allAreas = new ArrayList<Double>();
+        double maxArea = 0;
+        for (Parcel parcel : parcels) {
+            double area = parcel.area();
+            if (area <= 0) {
+                continue;
+            }
+            allAreas.add(area);
+            if (hasHouseAspect(parcel.rect)) {
+                rectangularAreas.add(area);
+            }
+            if (area > maxArea) {
+                maxArea = area;
+            }
+        }
+
+        List<Double> source = !rectangularAreas.isEmpty() ? rectangularAreas : allAreas;
+        if (source.isEmpty()) {
+            double fallback = MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 1.1;
+            targetHouseArea = fallback;
+            houseAreaTolerance = Math.max(fallback * 0.22, MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 0.12);
+            return;
+        }
+
+        Collections.sort(source);
+        int index = source.size() > 1 ? (int) Math.round((source.size() - 1) * 0.35) : 0;
+        index = Math.max(0, Math.min(source.size() - 1, index));
+        double candidate = source.get(index);
+        double minHouseArea = MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 0.9;
+        targetHouseArea = Math.max(minHouseArea, candidate);
+        if (maxArea > 0 && targetHouseArea * 4.0 > maxArea) {
+            targetHouseArea = Math.max(minHouseArea, maxArea / 4.2);
+        }
+        houseAreaTolerance = Math.max(targetHouseArea * 0.22, MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 0.12);
+    }
+
     private void ensureRequiredBuildingTypes(List<Parcel> parcels) {
         Collections.sort(parcels, new Comparator<Parcel>() {
             @Override
@@ -584,7 +694,6 @@ public class ByzantineCityBlockGenerator {
         }
 
         assignShops(parcels);
-        assignHouses(parcels);
         assignRemaining(parcels);
 
         ensureTypePresence(parcels, BuildingType.PARK, parkParcel);
@@ -592,8 +701,12 @@ public class ByzantineCityBlockGenerator {
         ensureTypePresence(parcels, BuildingType.PRIVATE_HOUSE, null);
         ensureTypePresence(parcels, BuildingType.TENEMENT, churchParcel);
 
+        assignStandardizedHouses(parcels);
+        enforceInsulaHouseBalance(parcels);
+        assignStandardizedHouses(parcels);
+
         enforceMinimumBuildingCount(parcels, 8);
-        enforceMaximumBuildingCount(parcels, 20, 8);
+        enforceMaximumBuildingCount(parcels, 30, 8);
     }
 
     private List<Parcel> findCornerParcels(List<Parcel> parcels) {
@@ -655,12 +768,44 @@ public class ByzantineCityBlockGenerator {
             }
         });
         int assigned = 0;
+        double minArea = requiredTenementArea();
         for (Parcel parcel : candidates) {
             if (assigned >= count) {
                 break;
             }
-            parcel.type = BuildingType.TENEMENT;
-            assigned++;
+            if (parcel.type != BuildingType.UNASSIGNED || !isSquareish(parcel.rect)) {
+                continue;
+            }
+            if (parcel.area() >= minArea) {
+                parcel.type = BuildingType.TENEMENT;
+                assigned++;
+            }
+        }
+        if (assigned < count) {
+            for (Parcel parcel : candidates) {
+                if (assigned >= count) {
+                    break;
+                }
+                if (parcel.type != BuildingType.UNASSIGNED || !isSquareish(parcel.rect)) {
+                    continue;
+                }
+                if (parcel.area() >= minArea * 0.82) {
+                    parcel.type = BuildingType.TENEMENT;
+                    assigned++;
+                }
+            }
+        }
+        if (assigned < count) {
+            for (Parcel parcel : candidates) {
+                if (assigned >= count) {
+                    break;
+                }
+                if (parcel.type != BuildingType.UNASSIGNED || !isSquareish(parcel.rect)) {
+                    continue;
+                }
+                parcel.type = BuildingType.TENEMENT;
+                assigned++;
+            }
         }
         return assigned;
     }
@@ -689,12 +834,13 @@ public class ByzantineCityBlockGenerator {
             return 0;
         }
         int assigned = 0;
+        double minArea = type == BuildingType.TENEMENT ? requiredTenementArea() : 0;
         for (Parcel parcel : parcels) {
             if (parcel == exclude) {
                 continue;
             }
             if (parcel.type == BuildingType.UNASSIGNED && parcel.area() > 14000 * SCALE * SCALE) {
-                if (type == BuildingType.TENEMENT && !isSquareish(parcel.rect)) {
+                if (type == BuildingType.TENEMENT && (!isSquareish(parcel.rect) || parcel.area() < minArea)) {
                     continue;
                 }
                 parcel.type = type;
@@ -709,7 +855,8 @@ public class ByzantineCityBlockGenerator {
                 if (parcel == exclude) {
                     continue;
                 }
-                if (parcel.type == BuildingType.UNASSIGNED && parcel.area() > 11000 * SCALE * SCALE) {
+                if (parcel.type == BuildingType.UNASSIGNED && parcel.area() > 11000 * SCALE * SCALE
+                        && isSquareish(parcel.rect) && parcel.area() >= minArea * 0.8) {
                     parcel.type = type;
                     assigned++;
                 }
@@ -732,6 +879,9 @@ public class ByzantineCityBlockGenerator {
             if (type == BuildingType.TENEMENT) {
                 double ratioPenalty = Math.abs(aspectRatio(parcel.rect) - 1.0);
                 score -= ratioPenalty * parcel.area() * 0.4;
+                double minArea = requiredTenementArea();
+                double deficit = Math.max(0, minArea - parcel.area());
+                score -= deficit * 0.8;
             }
             if (score > bestScore) {
                 bestScore = score;
@@ -903,29 +1053,18 @@ public class ByzantineCityBlockGenerator {
 
     }
 
-    private void assignHouses(List<Parcel> parcels) {
-        for (Parcel parcel : parcels) {
-            if (parcel.type == BuildingType.UNASSIGNED && parcel.area() < 26000 * SCALE * SCALE) {
-                if (isRectangular(parcel.rect)) {
-                    parcel.type = BuildingType.PRIVATE_HOUSE;
-                }
-            }
-        }
-    }
-
     private void assignRemaining(List<Parcel> parcels) {
         for (Parcel parcel : parcels) {
             if (parcel.type == BuildingType.UNASSIGNED) {
-                double ratio = aspectRatio(parcel.rect);
-                if (parcel.area() > 26000 * SCALE * SCALE && isSquareish(parcel.rect)) {
+                double minInsula = requiredTenementArea();
+                if (isSquareish(parcel.rect) && parcel.area() >= minInsula * 0.95) {
                     parcel.type = BuildingType.TENEMENT;
-                } else if (parcel.area() > 26000 * SCALE * SCALE && ratio > 1.25) {
-                    parcel.type = BuildingType.PRIVATE_HOUSE;
-                } else if (random.nextDouble() < 0.28) {
+                    continue;
+                }
+                double roll = random.nextDouble();
+                if (roll < 0.22) {
                     parcel.type = BuildingType.PARK;
-                } else if (isRectangular(parcel.rect)) {
-                    parcel.type = BuildingType.PRIVATE_HOUSE;
-                } else {
+                } else if (roll < 0.65) {
                     parcel.type = BuildingType.SHOP;
                 }
             }
@@ -957,37 +1096,13 @@ public class ByzantineCityBlockGenerator {
                 }
                 break;
             case PRIVATE_HOUSE:
-                Parcel houseCandidate = findBestByComparator(parcels, new Comparator<Parcel>() {
-                    @Override
-                    public int compare(Parcel a, Parcel b) {
-                        double target = 15000 * SCALE * SCALE;
-                        double scoreA = Math.abs(a.area() - target);
-                        double scoreB = Math.abs(b.area() - target);
-                        if (!isRectangular(a.rect)) {
-                            scoreA += target;
-                        }
-                        if (!isRectangular(b.rect)) {
-                            scoreB += target;
-                        }
-                        return Double.compare(scoreA, scoreB);
-                    }
-                }, exclude);
+                Parcel houseCandidate = findHouseCandidate(parcels, exclude);
                 if (houseCandidate != null) {
                     houseCandidate.type = BuildingType.PRIVATE_HOUSE;
                 }
                 break;
             case TENEMENT:
-                Parcel tenementCandidate = findBestByComparator(parcels, new Comparator<Parcel>() {
-                    @Override
-                    public int compare(Parcel a, Parcel b) {
-                        double diffA = Math.abs(aspectRatio(a.rect) - 1.0);
-                        double diffB = Math.abs(aspectRatio(b.rect) - 1.0);
-                        if (diffA != diffB) {
-                            return Double.compare(diffA, diffB);
-                        }
-                        return Double.compare(b.area(), a.area());
-                    }
-                }, exclude);
+                Parcel tenementCandidate = findTenementCandidate(parcels, exclude);
                 if (tenementCandidate != null) {
                     tenementCandidate.type = BuildingType.TENEMENT;
                 }
@@ -1029,6 +1144,81 @@ public class ByzantineCityBlockGenerator {
         return best;
     }
 
+    private Parcel findHouseCandidate(List<Parcel> parcels, Parcel exclude) {
+        double target = targetHouseArea > 0 ? targetHouseArea : MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 1.1;
+        double tolerance = houseTolerance();
+        Parcel best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (Parcel parcel : parcels) {
+            if (parcel == exclude || parcel.type == BuildingType.CHURCH || parcel.type == BuildingType.TENEMENT) {
+                continue;
+            }
+            if (!hasHouseAspect(parcel.rect)) {
+                continue;
+            }
+            double diff = Math.abs(parcel.area() - target);
+            double penalty = 0;
+            if (parcel.type == BuildingType.PARK) {
+                penalty += target * 2.0;
+            } else if (parcel.type == BuildingType.SHOP) {
+                penalty += target * 0.65;
+            }
+            if (diff > tolerance) {
+                penalty += diff * 0.6;
+            }
+            double score = diff + penalty;
+            if (score < bestScore) {
+                bestScore = score;
+                best = parcel;
+            }
+        }
+        if (best == null) {
+            bestScore = Double.POSITIVE_INFINITY;
+            for (Parcel parcel : parcels) {
+                if (parcel == exclude || parcel.type == BuildingType.CHURCH || parcel.type == BuildingType.TENEMENT) {
+                    continue;
+                }
+                double diff = Math.abs(parcel.area() - target);
+                double penalty = parcel.type == BuildingType.PARK ? target * 1.8 : 0;
+                double score = diff + penalty;
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = parcel;
+                }
+            }
+        }
+        return best;
+    }
+
+    private Parcel findTenementCandidate(List<Parcel> parcels, Parcel exclude) {
+        double minArea = requiredTenementArea();
+        Parcel best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (Parcel parcel : parcels) {
+            if (parcel == exclude || parcel.type == BuildingType.CHURCH) {
+                continue;
+            }
+            if (!isSquareish(parcel.rect)) {
+                continue;
+            }
+            double area = parcel.area();
+            double score = area;
+            if (area < minArea) {
+                score -= (minArea - area) * 1.2;
+            }
+            if (parcel.type == BuildingType.PARK) {
+                score -= minArea * 0.6;
+            } else if (parcel.type == BuildingType.PRIVATE_HOUSE) {
+                score -= minArea * 0.35;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = parcel;
+            }
+        }
+        return best;
+    }
+
     private int typePenalty(BuildingType type) {
         if (type == BuildingType.UNASSIGNED) {
             return 0;
@@ -1043,6 +1233,119 @@ public class ByzantineCityBlockGenerator {
             return 3;
         }
         return 4;
+    }
+
+    private double houseTolerance() {
+        double target = targetHouseArea > 0 ? targetHouseArea : MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 1.1;
+        double base = target * 0.22;
+        double floor = MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 0.12;
+        return Math.max(base, floor);
+    }
+
+    private boolean hasHouseAspect(Rectangle2D.Double rect) {
+        double ratio = aspectRatio(rect);
+        return ratio >= 1.35 && ratio <= 3.0;
+    }
+
+    private double requiredTenementArea() {
+        double base = targetHouseArea > 0 ? targetHouseArea * 4.0 : MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 4.0;
+        double floor = MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 3.2;
+        return Math.max(base, floor);
+    }
+
+    private void assignStandardizedHouses(List<Parcel> parcels) {
+        double target = targetHouseArea > 0 ? targetHouseArea : MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 1.1;
+        double tolerance = houseTolerance();
+
+        List<Parcel> houses = new ArrayList<Parcel>();
+        List<Parcel> toReset = new ArrayList<Parcel>();
+        for (Parcel parcel : parcels) {
+            if (parcel.type == BuildingType.PRIVATE_HOUSE) {
+                if (!hasHouseAspect(parcel.rect) || Math.abs(parcel.area() - target) > tolerance * 1.25) {
+                    toReset.add(parcel);
+                } else {
+                    houses.add(parcel);
+                }
+            }
+        }
+        for (Parcel parcel : toReset) {
+            parcel.type = BuildingType.UNASSIGNED;
+        }
+
+        List<Parcel> candidates = new ArrayList<Parcel>();
+        for (Parcel parcel : parcels) {
+            if (parcel.type == BuildingType.UNASSIGNED && hasHouseAspect(parcel.rect)) {
+                candidates.add(parcel);
+            }
+        }
+        Collections.sort(candidates, new Comparator<Parcel>() {
+            @Override
+            public int compare(Parcel a, Parcel b) {
+                double diffA = Math.abs(a.area() - target);
+                double diffB = Math.abs(b.area() - target);
+                return Double.compare(diffA, diffB);
+            }
+        });
+
+        int desired = Math.min(houses.size() + candidates.size(), Math.max(Math.max(2, parcels.size() / 3), houses.size()));
+        double[] multipliers = new double[]{1.0, 1.35, 1.8};
+        for (double multiplier : multipliers) {
+            double limit = tolerance * multiplier;
+            for (Parcel candidate : candidates) {
+                if (candidate.type != BuildingType.UNASSIGNED) {
+                    continue;
+                }
+                if (houses.size() >= desired) {
+                    break;
+                }
+                if (Math.abs(candidate.area() - target) <= limit) {
+                    candidate.type = BuildingType.PRIVATE_HOUSE;
+                    houses.add(candidate);
+                }
+            }
+            if (houses.size() >= desired) {
+                break;
+            }
+        }
+
+        int minimumHouses = Math.max(2, parcels.size() / 4);
+        if (houses.size() < minimumHouses) {
+            for (Parcel candidate : candidates) {
+                if (candidate.type != BuildingType.UNASSIGNED) {
+                    continue;
+                }
+                candidate.type = BuildingType.PRIVATE_HOUSE;
+                houses.add(candidate);
+                if (houses.size() >= minimumHouses) {
+                    break;
+                }
+            }
+        }
+
+        if (houses.isEmpty() && !candidates.isEmpty()) {
+            Parcel candidate = candidates.get(0);
+            candidate.type = BuildingType.PRIVATE_HOUSE;
+            houses.add(candidate);
+        }
+
+        houseAreaTolerance = tolerance;
+    }
+
+    private void enforceInsulaHouseBalance(List<Parcel> parcels) {
+        double smallestTenement = Double.POSITIVE_INFINITY;
+        for (Parcel parcel : parcels) {
+            if (parcel.type == BuildingType.TENEMENT) {
+                smallestTenement = Math.min(smallestTenement, parcel.area());
+            }
+        }
+        if (smallestTenement == Double.POSITIVE_INFINITY) {
+            return;
+        }
+        double minHouseArea = Math.max(MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 0.9, smallestTenement / 4.2);
+        if (targetHouseArea <= 0 || targetHouseArea > minHouseArea) {
+            targetHouseArea = minHouseArea;
+        }
+        houseAreaTolerance = houseTolerance();
     }
 
     private void drawInnerRoads(Graphics2D g, List<Road> innerRoads) {
