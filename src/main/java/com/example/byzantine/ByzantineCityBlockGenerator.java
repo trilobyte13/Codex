@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
@@ -387,6 +388,7 @@ public class ByzantineCityBlockGenerator {
         ensureTypePresence(parcels, BuildingType.TENEMENT, churchParcel);
 
         enforceMinimumBuildingCount(parcels, 8);
+        enforceMaximumBuildingCount(parcels, 20, 8);
     }
 
     private Parcel chooseCentralParcel(List<Parcel> parcels) {
@@ -574,6 +576,54 @@ public class ByzantineCityBlockGenerator {
             }
             buildings++;
         }
+    }
+
+    private void enforceMaximumBuildingCount(List<Parcel> parcels, int maxBuildings, int minBuildings) {
+        EnumMap<BuildingType, Integer> counts = new EnumMap<BuildingType, Integer>(BuildingType.class);
+        int buildings = 0;
+        for (Parcel parcel : parcels) {
+            BuildingType type = parcel.type;
+            if (type == BuildingType.UNASSIGNED || type == BuildingType.PARK) {
+                continue;
+            }
+            counts.put(type, counts.containsKey(type) ? counts.get(type) + 1 : 1);
+            buildings++;
+        }
+        if (buildings <= maxBuildings) {
+            return;
+        }
+
+        List<Parcel> convertible = new ArrayList<Parcel>();
+        for (Parcel parcel : parcels) {
+            if (parcel.type == BuildingType.UNASSIGNED || parcel.type == BuildingType.PARK) {
+                continue;
+            }
+            convertible.add(parcel);
+        }
+        Collections.sort(convertible, new Comparator<Parcel>() {
+            @Override
+            public int compare(Parcel a, Parcel b) {
+                return Double.compare(a.area(), b.area());
+            }
+        });
+
+        for (Parcel parcel : convertible) {
+            if (buildings <= maxBuildings) {
+                break;
+            }
+            BuildingType type = parcel.type;
+            Integer count = counts.get(type);
+            if (count == null || count <= 1) {
+                continue;
+            }
+            if (buildings - 1 < minBuildings) {
+                break;
+            }
+            parcel.type = BuildingType.PARK;
+            counts.put(type, count - 1);
+            buildings--;
+        }
+
     }
 
     private void assignHouses(List<Parcel> parcels) {
@@ -2333,22 +2383,81 @@ public class ByzantineCityBlockGenerator {
             return null;
         }
 
-        int padding = (int) Math.max(18, Math.round(20 * SCALE));
-        int swatchSize = (int) Math.max(18, Math.round(30 * SCALE));
-        int gap = (int) Math.max(10, Math.round(16 * SCALE));
-        Font headerFont = LABEL_FONT.deriveFont(Font.BOLD, (float) Math.max(18f, (float) (20f * SCALE)));
-        Font entryFont = LABEL_FONT.deriveFont(Font.PLAIN, (float) Math.max(16f, (float) (LABEL_FONT.getSize() * 0.8)));
+        double scaleHint = Math.sqrt(Math.max(1.0, SCALE));
+        double basePadding = 16 * scaleHint;
+        double baseSwatch = 26 * scaleHint;
+        double baseGap = 9 * scaleHint;
+        double baseCorner = 20 * scaleHint;
+        float baseHeader = (float) (22f * scaleHint);
+        float baseEntry = (float) (17f * scaleHint);
 
+        LegendLayout fallback = null;
+        double factor = 1.0;
+        while (factor >= 0.45) {
+            int padding = Math.max(10, (int) Math.round(basePadding * factor));
+            int swatchSize = Math.max(16, (int) Math.round(baseSwatch * factor));
+            int gap = Math.max(6, (int) Math.round(baseGap * factor));
+            int corner = Math.max(12, (int) Math.round(baseCorner * factor));
+            float headerSize = Math.max(13f, baseHeader * (float) factor);
+            float entrySize = Math.max(11.5f, baseEntry * (float) factor);
+
+            Font headerFont = LABEL_FONT.deriveFont(Font.BOLD, headerSize);
+            Font entryFont = LABEL_FONT.deriveFont(Font.PLAIN, entrySize);
+
+            FontMetrics headerMetrics = g.getFontMetrics(headerFont);
+            FontMetrics entryMetrics = g.getFontMetrics(entryFont);
+            int headerHeight = headerMetrics.getHeight();
+            int headerAscent = headerMetrics.getAscent();
+            int entryHeight = Math.max(swatchSize, entryMetrics.getHeight());
+            int entryAscent = entryMetrics.getAscent();
+            int maxLabelWidth = 0;
+            for (BuildingType type : entries) {
+                int width = entryMetrics.stringWidth(type.label);
+                if (width > maxLabelWidth) {
+                    maxLabelWidth = width;
+                }
+            }
+            int legendWidth = padding * 2 + swatchSize + gap + maxLabelWidth;
+            int legendHeight = padding * 2 + headerHeight + gap + entries.size() * entryHeight + (entries.size() - 1) * gap;
+
+            LegendLayout layout = new LegendLayout(entries, padding, swatchSize, gap, corner, legendWidth, legendHeight,
+                    headerFont, entryFont, headerAscent, headerHeight, entryAscent, entryHeight);
+            if (legendWidth <= 250 && legendHeight <= 250) {
+                return layout;
+            }
+            fallback = layout;
+            factor *= 0.9;
+        }
+
+        if (fallback != null && fallback.width <= 250 && fallback.height <= 250) {
+            return fallback;
+        }
+
+        int padding = 10;
+        int swatchSize = 16;
+        int gap = 6;
+        int corner = 12;
+        Font headerFont = LABEL_FONT.deriveFont(Font.BOLD, 13f);
+        Font entryFont = LABEL_FONT.deriveFont(Font.PLAIN, 11.5f);
         FontMetrics headerMetrics = g.getFontMetrics(headerFont);
         FontMetrics entryMetrics = g.getFontMetrics(entryFont);
         int headerHeight = headerMetrics.getHeight();
+        int headerAscent = headerMetrics.getAscent();
         int entryHeight = Math.max(swatchSize, entryMetrics.getHeight());
-        int legendWidth = (int) Math.max(260, Math.round(320 * SCALE));
+        int entryAscent = entryMetrics.getAscent();
+        int maxLabelWidth = 0;
+        for (BuildingType type : entries) {
+            int width = entryMetrics.stringWidth(type.label);
+            if (width > maxLabelWidth) {
+                maxLabelWidth = width;
+            }
+        }
+        int legendWidth = padding * 2 + swatchSize + gap + maxLabelWidth;
         int legendHeight = padding * 2 + headerHeight + gap + entries.size() * entryHeight + (entries.size() - 1) * gap;
-        int corner = (int) Math.max(16, Math.round(24 * SCALE));
 
-        return new LegendLayout(entries, padding, swatchSize, gap, corner, legendWidth, legendHeight,
-                headerFont, entryFont, headerMetrics.getAscent(), headerHeight, entryMetrics.getAscent(), entryHeight);
+        return new LegendLayout(entries, padding, swatchSize, gap, corner,
+                Math.min(legendWidth, 250), Math.min(legendHeight, 250),
+                headerFont, entryFont, headerAscent, headerHeight, entryAscent, entryHeight);
     }
 
     private void drawLegend(Graphics2D g, LegendLayout layout, double x, double y) {
