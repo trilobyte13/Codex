@@ -126,6 +126,7 @@ public class ByzantineCityBlockGenerator {
 
         List<Road> innerRoads = new ArrayList<Road>();
         List<Parcel> parcels = subdivideBlock(buildable, innerRoads);
+        ensureParcelCount(parcels, 9);
         this.currentRoads = innerRoads;
         ensureRequiredBuildingTypes(parcels);
 
@@ -225,6 +226,62 @@ public class ByzantineCityBlockGenerator {
             }
         }
         return parcels;
+    }
+
+    private void ensureParcelCount(List<Parcel> parcels, int minCount) {
+        if (parcels.isEmpty()) {
+            return;
+        }
+        int iterations = 0;
+        while (parcels.size() < minCount && iterations < 48) {
+            iterations++;
+            Parcel largest = Collections.max(parcels, new Comparator<Parcel>() {
+                @Override
+                public int compare(Parcel a, Parcel b) {
+                    return Double.compare(a.area(), b.area());
+                }
+            });
+            if (largest == null) {
+                break;
+            }
+            Rectangle2D.Double rect = largest.rect;
+            double minSplit = Math.max(60, MIN_PARCEL_SIZE * 0.45);
+            boolean canSplitVertical = rect.width / 2.0 >= minSplit;
+            boolean canSplitHorizontal = rect.height / 2.0 >= minSplit;
+            if (!canSplitVertical && !canSplitHorizontal) {
+                break;
+            }
+            boolean splitVertical = canSplitVertical && (rect.width >= rect.height || !canSplitHorizontal);
+            if (!splitVertical && !canSplitHorizontal) {
+                splitVertical = true;
+            }
+            parcels.remove(largest);
+            if (splitVertical) {
+                double splitX = rect.x + rect.width * (0.45 + 0.1 * random.nextDouble());
+                double leftWidth = splitX - rect.x;
+                double rightWidth = rect.x + rect.width - splitX;
+                if (leftWidth < 45 || rightWidth < 45) {
+                    splitX = rect.x + rect.width / 2.0;
+                    leftWidth = rightWidth = rect.width / 2.0;
+                }
+                Rectangle2D.Double left = new Rectangle2D.Double(rect.x, rect.y, leftWidth, rect.height);
+                Rectangle2D.Double right = new Rectangle2D.Double(splitX, rect.y, rightWidth, rect.height);
+                parcels.add(new Parcel(left));
+                parcels.add(new Parcel(right));
+            } else {
+                double splitY = rect.y + rect.height * (0.45 + 0.1 * random.nextDouble());
+                double topHeight = splitY - rect.y;
+                double bottomHeight = rect.y + rect.height - splitY;
+                if (topHeight < 45 || bottomHeight < 45) {
+                    splitY = rect.y + rect.height / 2.0;
+                    topHeight = bottomHeight = rect.height / 2.0;
+                }
+                Rectangle2D.Double top = new Rectangle2D.Double(rect.x, rect.y, rect.width, topHeight);
+                Rectangle2D.Double bottom = new Rectangle2D.Double(rect.x, splitY, rect.width, bottomHeight);
+                parcels.add(new Parcel(top));
+                parcels.add(new Parcel(bottom));
+            }
+        }
     }
 
     private boolean shouldSplit(Rectangle2D.Double rect) {
@@ -328,6 +385,8 @@ public class ByzantineCityBlockGenerator {
         ensureTypePresence(parcels, BuildingType.SHOP, null);
         ensureTypePresence(parcels, BuildingType.PRIVATE_HOUSE, null);
         ensureTypePresence(parcels, BuildingType.TENEMENT, churchParcel);
+
+        enforceMinimumBuildingCount(parcels, 8);
     }
 
     private Parcel chooseCentralParcel(List<Parcel> parcels) {
@@ -356,6 +415,9 @@ public class ByzantineCityBlockGenerator {
                 continue;
             }
             if (parcel.type == BuildingType.UNASSIGNED && parcel.area() > 14000 * SCALE * SCALE) {
+                if (type == BuildingType.TENEMENT && !isSquareish(parcel.rect)) {
+                    continue;
+                }
                 parcel.type = type;
                 assigned++;
             }
@@ -363,15 +425,42 @@ public class ByzantineCityBlockGenerator {
                 break;
             }
         }
+        if (type == BuildingType.TENEMENT && assigned < count) {
+            for (Parcel parcel : parcels) {
+                if (parcel == exclude) {
+                    continue;
+                }
+                if (parcel.type == BuildingType.UNASSIGNED && parcel.area() > 11000 * SCALE * SCALE) {
+                    parcel.type = type;
+                    assigned++;
+                }
+                if (assigned >= count) {
+                    break;
+                }
+            }
+        }
         return assigned;
     }
 
     private void assignFallbackByArea(List<Parcel> parcels, BuildingType type, Parcel exclude) {
+        Parcel best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
         for (Parcel parcel : parcels) {
-            if (parcel != exclude && parcel.type == BuildingType.UNASSIGNED) {
-                parcel.type = type;
-                return;
+            if (parcel == exclude || parcel.type != BuildingType.UNASSIGNED) {
+                continue;
             }
+            double score = parcel.area();
+            if (type == BuildingType.TENEMENT) {
+                double ratioPenalty = Math.abs(aspectRatio(parcel.rect) - 1.0);
+                score -= ratioPenalty * parcel.area() * 0.4;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = parcel;
+            }
+        }
+        if (best != null) {
+            best.type = type;
         }
     }
 
@@ -402,6 +491,25 @@ public class ByzantineCityBlockGenerator {
         return Math.min(Math.min(left, right), Math.min(top, bottom));
     }
 
+    private double aspectRatio(Rectangle2D.Double rect) {
+        if (rect.width <= 0 || rect.height <= 0) {
+            return 1.0;
+        }
+        double ratio = rect.width / rect.height;
+        if (ratio < 1.0) {
+            ratio = 1.0 / ratio;
+        }
+        return ratio;
+    }
+
+    private boolean isSquareish(Rectangle2D.Double rect) {
+        return aspectRatio(rect) <= 1.35;
+    }
+
+    private boolean isRectangular(Rectangle2D.Double rect) {
+        return aspectRatio(rect) >= 1.2;
+    }
+
     private void assignShops(List<Parcel> parcels) {
         List<Parcel> candidates = new ArrayList<Parcel>();
         for (Parcel parcel : parcels) {
@@ -423,10 +531,57 @@ public class ByzantineCityBlockGenerator {
         }
     }
 
+    private void enforceMinimumBuildingCount(List<Parcel> parcels, int minBuildings) {
+        int buildings = 0;
+        int parks = 0;
+        for (Parcel parcel : parcels) {
+            if (parcel.type == BuildingType.PARK) {
+                parks++;
+            } else {
+                buildings++;
+            }
+        }
+        if (buildings >= minBuildings) {
+            return;
+        }
+        List<Parcel> convertible = new ArrayList<Parcel>();
+        for (Parcel parcel : parcels) {
+            if (parcel.type == BuildingType.PARK) {
+                convertible.add(parcel);
+            }
+        }
+        Collections.sort(convertible, new Comparator<Parcel>() {
+            @Override
+            public int compare(Parcel a, Parcel b) {
+                return Double.compare(a.area(), b.area());
+            }
+        });
+        while (buildings < minBuildings && convertible.size() > 1) {
+            Parcel parcel = convertible.remove(0);
+            parks--;
+            if (parks < 1) {
+                // keep at least one park
+                parcel.type = BuildingType.PARK;
+                parks++;
+                break;
+            }
+            if (isRectangular(parcel.rect)) {
+                parcel.type = BuildingType.PRIVATE_HOUSE;
+            } else if (isSquareish(parcel.rect)) {
+                parcel.type = BuildingType.TENEMENT;
+            } else {
+                parcel.type = BuildingType.SHOP;
+            }
+            buildings++;
+        }
+    }
+
     private void assignHouses(List<Parcel> parcels) {
         for (Parcel parcel : parcels) {
-            if (parcel.type == BuildingType.UNASSIGNED && parcel.area() < 22000 * SCALE * SCALE) {
-                parcel.type = BuildingType.PRIVATE_HOUSE;
+            if (parcel.type == BuildingType.UNASSIGNED && parcel.area() < 26000 * SCALE * SCALE) {
+                if (isRectangular(parcel.rect)) {
+                    parcel.type = BuildingType.PRIVATE_HOUSE;
+                }
             }
         }
     }
@@ -434,12 +589,17 @@ public class ByzantineCityBlockGenerator {
     private void assignRemaining(List<Parcel> parcels) {
         for (Parcel parcel : parcels) {
             if (parcel.type == BuildingType.UNASSIGNED) {
-                if (parcel.area() > 26000 * SCALE * SCALE) {
+                double ratio = aspectRatio(parcel.rect);
+                if (parcel.area() > 26000 * SCALE * SCALE && isSquareish(parcel.rect)) {
                     parcel.type = BuildingType.TENEMENT;
-                } else if (random.nextDouble() < 0.3) {
-                    parcel.type = BuildingType.PARK;
-                } else {
+                } else if (parcel.area() > 26000 * SCALE * SCALE && ratio > 1.25) {
                     parcel.type = BuildingType.PRIVATE_HOUSE;
+                } else if (random.nextDouble() < 0.28) {
+                    parcel.type = BuildingType.PARK;
+                } else if (isRectangular(parcel.rect)) {
+                    parcel.type = BuildingType.PRIVATE_HOUSE;
+                } else {
+                    parcel.type = BuildingType.SHOP;
                 }
             }
         }
@@ -474,7 +634,15 @@ public class ByzantineCityBlockGenerator {
                     @Override
                     public int compare(Parcel a, Parcel b) {
                         double target = 15000 * SCALE * SCALE;
-                        return Double.compare(Math.abs(a.area() - target), Math.abs(b.area() - target));
+                        double scoreA = Math.abs(a.area() - target);
+                        double scoreB = Math.abs(b.area() - target);
+                        if (!isRectangular(a.rect)) {
+                            scoreA += target;
+                        }
+                        if (!isRectangular(b.rect)) {
+                            scoreB += target;
+                        }
+                        return Double.compare(scoreA, scoreB);
                     }
                 }, exclude);
                 if (houseCandidate != null) {
@@ -485,6 +653,11 @@ public class ByzantineCityBlockGenerator {
                 Parcel tenementCandidate = findBestByComparator(parcels, new Comparator<Parcel>() {
                     @Override
                     public int compare(Parcel a, Parcel b) {
+                        double diffA = Math.abs(aspectRatio(a.rect) - 1.0);
+                        double diffB = Math.abs(aspectRatio(b.rect) - 1.0);
+                        if (diffA != diffB) {
+                            return Double.compare(diffA, diffB);
+                        }
                         return Double.compare(b.area(), a.area());
                     }
                 }, exclude);
@@ -1309,28 +1482,147 @@ public class ByzantineCityBlockGenerator {
 
     private void drawParkPlan(Graphics2D g, Rectangle2D.Double rect) {
         Graphics2D g2 = (Graphics2D) g.create();
-        g2.setColor(new Color(156, 192, 132));
+        g2.setColor(new Color(152, 187, 126));
         g2.fill(rect);
 
-        g2.setColor(new Color(120, 90, 60, 180));
-        g2.setStroke(new BasicStroke(4.6f));
+        g2.setColor(new Color(86, 120, 78, 200));
+        g2.setStroke(new BasicStroke(4.2f));
         g2.draw(rect);
 
-        g2.setStroke(new BasicStroke(6.4f));
-        Rectangle2D.Double crossPathH = new Rectangle2D.Double(rect.x, rect.getCenterY() - rect.height * 0.05, rect.width, rect.height * 0.1);
-        Rectangle2D.Double crossPathV = new Rectangle2D.Double(rect.getCenterX() - rect.width * 0.05, rect.y, rect.width * 0.1, rect.height);
-        g2.setColor(new Color(214, 198, 163));
-        g2.fill(crossPathH);
-        g2.fill(crossPathV);
-
-        g2.setColor(new Color(116, 156, 104));
-        for (int i = 0; i < 14; i++) {
-            double x = rect.x + rect.width * (0.1 + 0.8 * random.nextDouble());
-            double y = rect.y + rect.height * (0.1 + 0.8 * random.nextDouble());
-            g2.fill(new Rectangle2D.Double(x, y, 8 + random.nextInt(8), 8 + random.nextInt(8)));
+        int motif = random.nextInt(4);
+        switch (motif) {
+            case 0:
+                drawTreeGrove(g2, rect);
+                break;
+            case 1:
+                drawFountainCourt(g2, rect);
+                break;
+            case 2:
+                drawColumnGarden(g2, rect);
+                break;
+            default:
+                drawStatueWalk(g2, rect);
+                break;
         }
 
         g2.dispose();
+    }
+
+    private void drawTreeGrove(Graphics2D g2, Rectangle2D.Double rect) {
+        RoundRectangle2D.Double path = new RoundRectangle2D.Double(rect.x + rect.width * 0.08,
+                rect.y + rect.height * 0.08, rect.width * 0.84, rect.height * 0.84, rect.width * 0.18, rect.height * 0.18);
+        g2.setColor(new Color(214, 198, 163));
+        g2.fill(path);
+
+        Rectangle2D.Double lawn = new Rectangle2D.Double(path.x + path.width * 0.08, path.y + path.height * 0.08,
+                path.width * 0.84, path.height * 0.84);
+        g2.setColor(new Color(147, 182, 116));
+        g2.fill(lawn);
+
+        g2.setColor(new Color(86, 121, 74));
+        int clusters = 6 + random.nextInt(4);
+        for (int i = 0; i < clusters; i++) {
+            double cx = lawn.x + lawn.width * random.nextDouble();
+            double cy = lawn.y + lawn.height * random.nextDouble();
+            double radius = clamp(Math.min(lawn.width, lawn.height) * 0.06 * (0.6 + random.nextDouble()), 12, 42);
+            g2.fill(new Ellipse2D.Double(cx - radius / 2.0, cy - radius / 2.0, radius, radius));
+        }
+
+        g2.setColor(new Color(116, 156, 104));
+        g2.setStroke(new BasicStroke(2.6f));
+        g2.draw(path);
+    }
+
+    private void drawFountainCourt(Graphics2D g2, Rectangle2D.Double rect) {
+        Rectangle2D.Double paving = insetRect(rect, rect.width * 0.08, rect.height * 0.08);
+        g2.setColor(new Color(222, 210, 182));
+        g2.fill(paving);
+
+        Ellipse2D.Double basin = new Ellipse2D.Double(paving.getCenterX() - paving.width * 0.18,
+                paving.getCenterY() - paving.width * 0.18, paving.width * 0.36, paving.width * 0.36);
+        g2.setColor(new Color(166, 198, 212));
+        g2.fill(basin);
+
+        RoundRectangle2D.Double channelNorth = new RoundRectangle2D.Double(paving.x + paving.width * 0.2,
+                paving.getCenterY() - paving.height * 0.06, paving.width * 0.6, paving.height * 0.12, paving.height * 0.04,
+                paving.height * 0.04);
+        RoundRectangle2D.Double channelEast = new RoundRectangle2D.Double(paving.getCenterX() - paving.width * 0.06,
+                paving.y + paving.height * 0.2, paving.width * 0.12, paving.height * 0.6, paving.width * 0.04,
+                paving.width * 0.04);
+        g2.setColor(new Color(204, 188, 154));
+        g2.fill(channelNorth);
+        g2.fill(channelEast);
+
+        g2.setColor(new Color(120, 90, 60, 200));
+        g2.setStroke(new BasicStroke(2.8f));
+        g2.draw(basin);
+        g2.draw(channelNorth);
+        g2.draw(channelEast);
+
+        g2.setColor(new Color(147, 182, 116));
+        for (int i = 0; i < 12; i++) {
+            double angle = (Math.PI * 2 / 12) * i;
+            double radius = paving.width * 0.42;
+            double cx = paving.getCenterX() + Math.cos(angle) * radius * 0.7;
+            double cy = paving.getCenterY() + Math.sin(angle) * radius * 0.7;
+            g2.fill(new Ellipse2D.Double(cx - 10, cy - 10, 20, 20));
+        }
+    }
+
+    private void drawColumnGarden(Graphics2D g2, Rectangle2D.Double rect) {
+        Rectangle2D.Double court = insetRect(rect, rect.width * 0.07, rect.height * 0.07);
+        g2.setColor(new Color(209, 195, 170));
+        g2.fill(court);
+
+        g2.setColor(new Color(118, 88, 60, 220));
+        g2.setStroke(new BasicStroke(3.0f));
+        g2.draw(court);
+
+        int columnsX = 3 + random.nextInt(2);
+        int columnsY = 3 + random.nextInt(2);
+        double spacingX = court.width / (columnsX + 1);
+        double spacingY = court.height / (columnsY + 1);
+        double columnRadius = Math.min(spacingX, spacingY) * 0.22;
+        g2.setColor(new Color(198, 182, 154));
+        for (int i = 1; i <= columnsX; i++) {
+            for (int j = 1; j <= columnsY; j++) {
+                double cx = court.x + i * spacingX;
+                double cy = court.y + j * spacingY;
+                g2.fill(new Ellipse2D.Double(cx - columnRadius / 2.0, cy - columnRadius / 2.0, columnRadius, columnRadius));
+            }
+        }
+
+        Rectangle2D.Double verge = insetRect(court, spacingX * 0.5, spacingY * 0.5);
+        g2.setColor(new Color(147, 182, 116));
+        g2.fill(verge);
+    }
+
+    private void drawStatueWalk(Graphics2D g2, Rectangle2D.Double rect) {
+        RoundRectangle2D.Double promenade = new RoundRectangle2D.Double(rect.x + rect.width * 0.06,
+                rect.y + rect.height * 0.18, rect.width * 0.88, rect.height * 0.64, rect.width * 0.16, rect.height * 0.16);
+        g2.setColor(new Color(214, 198, 163));
+        g2.fill(promenade);
+
+        g2.setColor(new Color(120, 90, 60, 200));
+        g2.setStroke(new BasicStroke(3.0f));
+        g2.draw(promenade);
+
+        int statueCount = 5 + random.nextInt(3);
+        double spacing = promenade.width / (statueCount + 1);
+        for (int i = 1; i <= statueCount; i++) {
+            double baseX = promenade.x + i * spacing;
+            double baseY = promenade.getCenterY();
+            Rectangle2D.Double plinth = new Rectangle2D.Double(baseX - 10, baseY - 10, 20, 20);
+            Ellipse2D.Double statue = new Ellipse2D.Double(baseX - 6, baseY - 32, 12, 24);
+            g2.setColor(new Color(198, 182, 154));
+            g2.fill(plinth);
+            g2.setColor(new Color(166, 150, 122));
+            g2.fill(statue);
+        }
+
+        g2.setColor(new Color(147, 182, 116));
+        Rectangle2D.Double greensward = insetRect(rect, rect.width * 0.12, rect.height * 0.12);
+        g2.fill(greensward);
     }
 
     private void drawOuterWall(Graphics2D g, Rectangle2D.Double rect, Edge entrance, double doorSpan, EnumSet<Edge> partyWalls) {
