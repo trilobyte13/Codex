@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
 
@@ -470,7 +471,8 @@ public class ByzantineCityBlockGenerator {
             Graphics2D planGraphics = (Graphics2D) g.create();
             planGraphics.clip(parcel.rect);
             Edge entrance = findEntranceSide(parcel);
-            drawFloorPlan(planGraphics, parcel.rect, type, entrance);
+            EnumSet<Edge> partyWalls = findPartyWalls(parcel, parcels);
+            drawFloorPlan(planGraphics, parcel.rect, type, entrance, partyWalls);
             planGraphics.dispose();
 
             g.setColor(type.strokeColor);
@@ -479,123 +481,322 @@ public class ByzantineCityBlockGenerator {
         }
     }
 
-    private void drawFloorPlan(Graphics2D g, Rectangle2D.Double rect, BuildingType type, Edge entrance) {
+    private EnumSet<Edge> findPartyWalls(Parcel parcel, List<Parcel> parcels) {
+        EnumSet<Edge> partyWalls = EnumSet.noneOf(Edge.class);
+        Rectangle2D.Double rect = parcel.rect;
+        for (Edge edge : Edge.values()) {
+            if (touchesPerimeter(rect, edge) || touchesAnyRoad(rect, edge)) {
+                continue;
+            }
+            for (Parcel other : parcels) {
+                if (other == parcel) {
+                    continue;
+                }
+                if (touchesParcel(rect, edge, other.rect)) {
+                    partyWalls.add(edge);
+                    break;
+                }
+            }
+        }
+        return partyWalls;
+    }
+
+    private void drawFloorPlan(Graphics2D g, Rectangle2D.Double rect, BuildingType type, Edge entrance, EnumSet<Edge> partyWalls) {
         g.setColor(FLOOR_TONE);
         g.fill(rect);
 
         switch (type) {
             case CHURCH:
-                drawChurchPlan(g, rect, entrance);
+                drawChurchPlan(g, rect, entrance, partyWalls);
                 break;
             case TENEMENT:
-                drawTenementPlan(g, rect, entrance);
+                drawTenementPlan(g, rect, entrance, partyWalls);
                 break;
             case SHOP:
-                drawShopPlan(g, rect, entrance);
+                drawShopPlan(g, rect, entrance, partyWalls);
                 break;
             case PARK:
                 drawParkPlan(g, rect);
                 break;
             case PRIVATE_HOUSE:
             default:
-                drawHousePlan(g, rect, entrance);
+                drawHousePlan(g, rect, entrance, partyWalls);
                 break;
         }
     }
 
-    private void drawHousePlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance) {
+    private void drawHousePlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance, EnumSet<Edge> partyWalls) {
         Graphics2D g2 = (Graphics2D) g.create();
-        double doorSpan = orientedSpan(rect, entrance) * 0.28;
-        drawOuterWall(g2, rect, entrance, doorSpan);
+        double doorSpan = orientedSpan(rect, entrance) * 0.26;
+        drawOuterWall(g2, rect, entrance, doorSpan, partyWalls);
 
-        Rectangle2D.Double courtyard = insetRect(rect, rect.width * 0.22, rect.height * 0.22);
-        g2.setColor(new Color(229, 216, 182));
-        g2.fill(courtyard);
+        double span = orientedSpan(rect, entrance);
+        double depth = perpendicularSpan(rect, entrance);
 
-        Rectangle2D.Double vestibule = createEdgeStrip(rect, entrance, perpendicularSpan(rect, entrance) * 0.18);
+        double faucesDepth = clamp(depth * 0.14, 26, depth * 0.2);
+        double atriumDepth = clamp(depth * 0.28, 72, depth * 0.34);
+        double tablinumDepth = clamp(depth * 0.1, 32, depth * 0.16);
+        double peristyleDepth = clamp(depth * 0.28, 88, depth * 0.36);
+        double minimumService = Math.max(48, depth * 0.12);
+        double consumed = faucesDepth + atriumDepth + tablinumDepth + peristyleDepth + minimumService;
+        if (consumed > depth) {
+            double deficit = consumed - depth;
+            peristyleDepth = Math.max(peristyleDepth - deficit * 0.55, depth * 0.2);
+            atriumDepth = Math.max(atriumDepth - deficit * 0.25, depth * 0.22);
+            tablinumDepth = Math.max(tablinumDepth - deficit * 0.1, depth * 0.08);
+        }
+        double serviceDepth = Math.max(42, depth - (faucesDepth + atriumDepth + tablinumDepth + peristyleDepth));
+
+        double cursorY = 0;
+
+        double faucesWidth = Math.min(span - 18, Math.max(36, span * 0.36));
+        double faucesMargin = Math.max(8, (span - faucesWidth) / 2.0);
+        Rectangle2D.Double fauces = orientedLocalRect(rect, entrance, faucesMargin, cursorY, faucesWidth, faucesDepth);
         g2.setColor(WALKWAY_TONE);
-        g2.fill(vestibule);
+        g2.fill(fauces);
+        cursorY += faucesDepth;
 
-        Rectangle2D.Double connector = createConnector(rect, courtyard, entrance, 0.36);
-        g2.fill(connector);
+        double atriumWidth = Math.min(span - 20, Math.max(span * 0.72, span * 0.6));
+        double atriumMargin = Math.max(10, (span - atriumWidth) / 2.0);
+        Rectangle2D.Double atrium = orientedLocalRect(rect, entrance, atriumMargin, cursorY, atriumWidth, atriumDepth);
+        g2.setColor(new Color(232, 219, 196));
+        g2.fill(atrium);
 
-        drawRectOutlineWithDoor(g2, courtyard, entrance, connector);
+        Rectangle2D.Double impluvium = insetRect(atrium, atrium.width * 0.35, atrium.height * 0.35);
+        g2.setColor(new Color(166, 198, 212));
+        g2.fill(impluvium);
+        g2.setColor(WALL_TONE);
+        g2.setStroke(new BasicStroke(3.2f));
+        g2.draw(impluvium);
 
-        Edge left = rotateCounterClockwise(entrance);
-        Edge right = rotateClockwise(entrance);
-        Edge rear = opposite(entrance);
+        double alaWidth = Math.max(24, atriumMargin + atriumWidth * 0.18);
+        double alaHeight = atriumDepth * 0.65;
+        double alaOffsetY = cursorY + atriumDepth * 0.18;
+        Rectangle2D.Double alaLeft = orientedLocalRect(rect, entrance, 0, alaOffsetY, alaWidth, alaHeight);
+        Rectangle2D.Double alaRight = orientedLocalRect(rect, entrance, span - alaWidth, alaOffsetY, alaWidth, alaHeight);
+        g2.setColor(new Color(221, 206, 178));
+        g2.fill(alaLeft);
+        g2.fill(alaRight);
 
-        Rectangle2D.Double leftWing = createWing(rect, courtyard, left);
-        Rectangle2D.Double rightWing = createWing(rect, courtyard, right);
-        Rectangle2D.Double rearWing = createWing(rect, courtyard, rear);
+        Rectangle2D.Double lararium = orientedLocalRect(rect, entrance, atriumMargin + atriumWidth * 0.35, cursorY + atriumDepth * 0.02, atriumWidth * 0.3, atriumDepth * 0.18);
+        g2.setColor(new Color(214, 198, 163));
+        g2.fill(lararium);
 
-        drawWingRooms(g2, leftWing, false, 2 + random.nextInt(2));
-        drawWingRooms(g2, rightWing, false, 2 + random.nextInt(2));
-        drawWingRooms(g2, rearWing, true, 3);
+        Rectangle2D.Double cubiculaFrontLeft = orientedLocalRect(rect, entrance, 0, 0, Math.max(span * 0.22, faucesMargin), cursorY + atriumDepth * 0.3);
+        Rectangle2D.Double cubiculaFrontRight = orientedLocalRect(rect, entrance, span - cubiculaFrontLeft.width, 0, cubiculaFrontLeft.width, cursorY + atriumDepth * 0.3);
+        g2.setColor(new Color(223, 207, 182));
+        g2.fill(cubiculaFrontLeft);
+        g2.fill(cubiculaFrontRight);
 
-        drawEdgeWall(g2, courtyard, left, null, 0.0);
-        drawEdgeWall(g2, courtyard, right, null, 0.0);
-        drawEdgeWall(g2, courtyard, rear, null, 0.0);
+        g2.setColor(WALL_TONE);
+        g2.setStroke(new BasicStroke(3.4f));
+        g2.draw(atrium);
+        g2.draw(fauces);
+        g2.draw(alaLeft);
+        g2.draw(alaRight);
+        g2.draw(cubiculaFrontLeft);
+        g2.draw(cubiculaFrontRight);
 
-        g2.dispose();
-    }
+        cursorY += atriumDepth;
 
-    private void drawTenementPlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance) {
-        Graphics2D g2 = (Graphics2D) g.create();
-        double doorSpan = orientedSpan(rect, entrance) * 0.22;
-        drawOuterWall(g2, rect, entrance, doorSpan);
+        double tablinumWidth = Math.min(span - 28, Math.max(span * 0.58, span * 0.48));
+        double tablinumMargin = Math.max(12, (span - tablinumWidth) / 2.0);
+        Rectangle2D.Double tablinum = orientedLocalRect(rect, entrance, tablinumMargin, cursorY, tablinumWidth, tablinumDepth);
+        g2.setColor(new Color(226, 210, 185));
+        g2.fill(tablinum);
+        g2.setColor(WALL_TONE);
+        g2.draw(tablinum);
 
-        Rectangle2D.Double courtyard = insetRect(rect, rect.width * 0.28, rect.height * 0.24);
-        g2.setColor(new Color(224, 210, 184));
-        g2.fill(courtyard);
+        cursorY += tablinumDepth;
 
-        Rectangle2D.Double connector = createConnector(rect, courtyard, entrance, 0.28);
+        double peristyleWidth = Math.min(span - 18, Math.max(span * 0.8, span * 0.64));
+        double peristyleMargin = Math.max(9, (span - peristyleWidth) / 2.0);
+        Rectangle2D.Double peristyle = orientedLocalRect(rect, entrance, peristyleMargin, cursorY, peristyleWidth, peristyleDepth);
         g2.setColor(WALKWAY_TONE);
-        g2.fill(connector);
+        g2.fill(peristyle);
+        Rectangle2D.Double viridarium = insetRect(peristyle, peristyle.width * 0.22, peristyle.height * 0.24);
+        g2.setColor(new Color(168, 190, 132));
+        g2.fill(viridarium);
+        drawPeristyleColonnade(g2, peristyle);
 
-        Rectangle2D.Double entranceHall = createEdgeStrip(rect, entrance, perpendicularSpan(rect, entrance) * 0.16);
-        g2.fill(entranceHall);
+        double tricliniumDepth = peristyleDepth * 0.42;
+        Rectangle2D.Double triclinium = orientedLocalRect(rect, entrance, 0, cursorY + peristyleDepth * 0.3, peristyleMargin + peristyleWidth * 0.35, tricliniumDepth);
+        Rectangle2D.Double oecus = orientedLocalRect(rect, entrance, span - triclinium.width, cursorY + peristyleDepth * 0.28, triclinium.width, tricliniumDepth);
+        g2.setColor(new Color(222, 205, 176));
+        g2.fill(triclinium);
+        g2.fill(oecus);
+        g2.setColor(WALL_TONE);
+        g2.draw(peristyle);
+        g2.draw(triclinium);
+        g2.draw(oecus);
 
-        drawRectOutlineWithDoor(g2, courtyard, entrance, connector);
-        drawEdgeWall(g2, courtyard, rotateCounterClockwise(entrance), null, 0.0);
-        drawEdgeWall(g2, courtyard, rotateClockwise(entrance), null, 0.0);
-        drawEdgeWall(g2, courtyard, opposite(entrance), null, 0.0);
+        cursorY += peristyleDepth;
 
-        Rectangle2D.Double leftWing = createWing(rect, courtyard, rotateCounterClockwise(entrance));
-        Rectangle2D.Double rightWing = createWing(rect, courtyard, rotateClockwise(entrance));
-        Rectangle2D.Double rearWing = createWing(rect, courtyard, opposite(entrance));
+        Rectangle2D.Double serviceRange = orientedLocalRect(rect, entrance, 0, cursorY, span, serviceDepth);
+        g2.setColor(new Color(214, 198, 163));
+        g2.fill(serviceRange);
 
-        drawWingRooms(g2, leftWing, true, 3);
-        drawWingRooms(g2, rightWing, true, 3);
-        drawWingRooms(g2, rearWing, false, 4);
+        double kitchenWidth = Math.max(span * 0.32, span * 0.28);
+        Rectangle2D.Double kitchen = orientedLocalRect(rect, entrance, 0, cursorY, kitchenWidth, serviceDepth * 0.72);
+        Rectangle2D.Double slaveQuarters = orientedLocalRect(rect, entrance, kitchenWidth + 12, cursorY, Math.max(span * 0.3, span * 0.24), serviceDepth);
+        double storageWidth = Math.max(span * 0.28, span * 0.22);
+        Rectangle2D.Double storeroom = orientedLocalRect(rect, entrance, span - storageWidth, cursorY, storageWidth, serviceDepth * 0.8);
+        g2.setColor(new Color(209, 191, 160));
+        g2.fill(kitchen);
+        g2.setColor(new Color(221, 206, 180));
+        g2.fill(slaveQuarters);
+        g2.setColor(new Color(208, 193, 168));
+        g2.fill(storeroom);
 
         g2.setColor(WALL_TONE);
         g2.setStroke(new BasicStroke(3.2f));
-        Rectangle2D.Double gallery = insetRect(rect, rect.width * 0.12, rect.height * 0.12);
-        g2.draw(gallery);
+        g2.draw(kitchen);
+        g2.draw(slaveQuarters);
+        g2.draw(storeroom);
+        g2.draw(serviceRange);
+
+        Rectangle2D.Double hearth = orientedLocalRect(rect, entrance, kitchenWidth * 0.25, cursorY + serviceDepth * 0.2, kitchenWidth * 0.25, serviceDepth * 0.32);
+        g2.setColor(new Color(196, 92, 64));
+        g2.fill(hearth);
 
         g2.dispose();
     }
 
-    private void drawShopPlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance) {
+    private void drawTenementPlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance, EnumSet<Edge> partyWalls) {
         Graphics2D g2 = (Graphics2D) g.create();
-        double doorSpan = orientedSpan(rect, entrance) * 0.4;
-        drawOuterWall(g2, rect, entrance, doorSpan);
+        double doorSpan = orientedSpan(rect, entrance) * 0.22;
+        drawOuterWall(g2, rect, entrance, doorSpan, partyWalls);
 
-        double frontDepth = Math.max(24, perpendicularSpan(rect, entrance) * 0.2);
-        double rearDepth = Math.max(28, perpendicularSpan(rect, entrance) * 0.24);
+        double span = orientedSpan(rect, entrance);
+        double depth = perpendicularSpan(rect, entrance);
+
+        double porticoDepth = clamp(depth * 0.12, 20, depth * 0.18);
+        double frontBlockDepth = clamp(depth * 0.18, 42, depth * 0.26);
+        double rearBlockDepth = clamp(depth * 0.24, 62, depth * 0.32);
+        double serviceYardDepth = clamp(depth * 0.12, 38, depth * 0.18);
+        double reserved = porticoDepth + frontBlockDepth + rearBlockDepth + serviceYardDepth;
+        double courtyardDepth = Math.max(56, depth - reserved);
+        if (courtyardDepth > depth * 0.3) {
+            double extra = courtyardDepth - depth * 0.3;
+            courtyardDepth -= extra;
+            rearBlockDepth += extra * 0.4;
+            serviceYardDepth += extra * 0.2;
+        }
+
+        double cursorY = 0;
+
+        Rectangle2D.Double portico = orientedLocalRect(rect, entrance, 0, cursorY, span, porticoDepth);
+        g2.setColor(WALKWAY_TONE);
+        g2.fill(portico);
+        cursorY += porticoDepth;
+
+        Rectangle2D.Double frontShops = orientedLocalRect(rect, entrance, 0, cursorY, span, frontBlockDepth);
+        g2.setColor(new Color(221, 205, 178));
+        g2.fill(frontShops);
+        drawStripSubdivisions(g2, frontShops, true, 3 + random.nextInt(2));
+        cursorY += frontBlockDepth;
+
+        double courtyardWidth = Math.min(span * 0.54, span - 90);
+        double courtyardMargin = Math.max(20, (span - courtyardWidth) / 2.0);
+        Rectangle2D.Double lightwell = orientedLocalRect(rect, entrance, courtyardMargin, cursorY, courtyardWidth, courtyardDepth);
+        g2.setColor(new Color(224, 210, 184));
+        g2.fill(lightwell);
+
+        Rectangle2D.Double cistern = insetRect(lightwell, lightwell.width * 0.4, lightwell.height * 0.4);
+        g2.setColor(new Color(182, 204, 214));
+        g2.fill(cistern);
+        g2.setColor(WALL_TONE);
+        g2.setStroke(new BasicStroke(3.1f));
+        g2.draw(cistern);
+
+        Rectangle2D.Double leftWalk = orientedLocalRect(rect, entrance, 0, cursorY, courtyardMargin, courtyardDepth);
+        Rectangle2D.Double rightWalk = orientedLocalRect(rect, entrance, span - courtyardMargin, cursorY, courtyardMargin, courtyardDepth);
+        g2.setColor(WALKWAY_TONE);
+        g2.fill(leftWalk);
+        g2.fill(rightWalk);
+
+        Rectangle2D.Double stairCoreFront = orientedLocalRect(rect, entrance, courtyardMargin - Math.max(12, span * 0.05), cursorY - porticoDepth * 0.4, Math.max(12, span * 0.05), porticoDepth * 0.9);
+        Rectangle2D.Double stairCoreRear = orientedLocalRect(rect, entrance, span - courtyardMargin, cursorY + courtyardDepth - porticoDepth * 0.5, Math.max(12, span * 0.05), porticoDepth);
+        g2.setColor(new Color(205, 188, 160));
+        g2.fill(stairCoreFront);
+        g2.fill(stairCoreRear);
+
+        g2.setColor(WALL_TONE);
+        g2.draw(leftWalk);
+        g2.draw(rightWalk);
+        g2.draw(lightwell);
+
+        cursorY += courtyardDepth;
+
+        Rectangle2D.Double rearBlock = orientedLocalRect(rect, entrance, 0, cursorY, span, rearBlockDepth);
+        g2.setColor(new Color(222, 206, 179));
+        g2.fill(rearBlock);
+        drawStripSubdivisions(g2, rearBlock, true, 4 + random.nextInt(2));
+
+        Rectangle2D.Double stairHall = orientedLocalRect(rect, entrance, span * 0.36, cursorY, span * 0.28, rearBlockDepth);
+        g2.setColor(WALKWAY_TONE);
+        g2.fill(stairHall);
+        g2.setColor(WALL_TONE);
+        g2.draw(stairHall);
+
+        cursorY += rearBlockDepth;
+
+        Rectangle2D.Double serviceCourt = orientedLocalRect(rect, entrance, 0, cursorY, span, serviceYardDepth);
+        g2.setColor(new Color(210, 196, 168));
+        g2.fill(serviceCourt);
+
+        Rectangle2D.Double latrine = orientedLocalRect(rect, entrance, span - Math.max(64, span * 0.18), cursorY + serviceYardDepth * 0.25, Math.max(58, span * 0.16), serviceYardDepth * 0.5);
+        g2.setColor(new Color(187, 203, 178));
+        g2.fill(latrine);
+        g2.setColor(WALL_TONE);
+        g2.draw(latrine);
+
+        Rectangle2D.Double cisternYard = orientedLocalRect(rect, entrance, Math.max(40, span * 0.12), cursorY + serviceYardDepth * 0.2, span * 0.22, serviceYardDepth * 0.55);
+        g2.setColor(new Color(182, 204, 214));
+        g2.fill(cisternYard);
+        g2.setColor(WALL_TONE);
+        g2.draw(cisternYard);
+
+        g2.setStroke(new BasicStroke(3.3f));
+        g2.draw(portico);
+        g2.draw(frontShops);
+        g2.draw(rearBlock);
+        g2.draw(serviceCourt);
+
+        g2.dispose();
+    }
+
+    private void drawShopPlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance, EnumSet<Edge> partyWalls) {
+        Graphics2D g2 = (Graphics2D) g.create();
+        double doorSpan = orientedSpan(rect, entrance) * 0.38;
+        drawOuterWall(g2, rect, entrance, doorSpan, partyWalls);
+
+        double depth = perpendicularSpan(rect, entrance);
+        double frontDepth = Math.max(24, depth * 0.18);
+        double salesDepth = Math.max(48, depth * 0.32);
+        double rearDepth = Math.max(32, depth - frontDepth - salesDepth);
 
         Rectangle2D.Double arcade = createEdgeStrip(rect, entrance, frontDepth);
         g2.setColor(WALKWAY_TONE);
         g2.fill(arcade);
 
+        Rectangle2D.Double salesHall = orientedLocalRect(rect, entrance, 0, frontDepth, orientedSpan(rect, entrance), salesDepth);
+        g2.setColor(new Color(224, 208, 180));
+        g2.fill(salesHall);
+
+        Rectangle2D.Double counters = orientedLocalRect(rect, entrance, 12, frontDepth + salesDepth * 0.15, orientedSpan(rect, entrance) - 24, salesDepth * 0.18);
+        g2.setColor(new Color(204, 188, 160));
+        g2.fill(counters);
+
         Rectangle2D.Double storerooms = createEdgeStrip(rect, opposite(entrance), rearDepth);
         g2.setColor(new Color(207, 195, 166));
         g2.fill(storerooms);
 
-        Rectangle2D.Double salesHall = middleBand(rect, arcade, storerooms, entrance);
-        g2.setColor(new Color(224, 208, 180));
-        g2.fill(salesHall);
+        Rectangle2D.Double offices = orientedLocalRect(rect, entrance, 0, frontDepth + salesDepth, orientedSpan(rect, entrance) * 0.35, rearDepth);
+        Rectangle2D.Double workshop = orientedLocalRect(rect, entrance, orientedSpan(rect, entrance) - offices.width, frontDepth + salesDepth, offices.width, rearDepth);
+        g2.setColor(new Color(210, 194, 170));
+        g2.fill(offices);
+        g2.fill(workshop);
 
         boolean horizontal = entrance == Edge.NORTH || entrance == Edge.SOUTH;
         int stalls = Math.max(3, (int) Math.round((horizontal ? rect.width : rect.height) / 120.0 * 3));
@@ -605,44 +806,70 @@ public class ByzantineCityBlockGenerator {
         g2.setColor(WALKWAY_TONE);
         g2.fill(servicePassage);
 
-        drawEdgeWall(g2, salesHall, opposite(entrance), servicePassage, 0.0);
-        drawEdgeWall(g2, salesHall, entrance, arcade, 0.45);
+        g2.setColor(WALL_TONE);
+        g2.setStroke(new BasicStroke(3.2f));
+        g2.draw(arcade);
+        g2.draw(storerooms);
+        g2.draw(offices);
+        g2.draw(workshop);
+        g2.draw(counters);
 
         g2.dispose();
     }
 
-    private void drawChurchPlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance) {
+    private void drawChurchPlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance, EnumSet<Edge> partyWalls) {
         Graphics2D g2 = (Graphics2D) g.create();
         double doorSpan = orientedSpan(rect, entrance) * 0.3;
-        drawOuterWall(g2, rect, entrance, doorSpan);
+        drawOuterWall(g2, rect, entrance, doorSpan, partyWalls);
+
+        Rectangle2D.Double narthex = createEdgeStrip(rect, entrance, perpendicularSpan(rect, entrance) * 0.14);
+        g2.setColor(WALKWAY_TONE);
+        g2.fill(narthex);
 
         Rectangle2D.Double nave = insetRect(rect, rect.width * 0.18, rect.height * 0.12);
         g2.setColor(new Color(230, 219, 194));
         g2.fill(nave);
 
-        Rectangle2D.Double naveConnector = createConnector(rect, nave, entrance, 0.32);
-        g2.setColor(WALKWAY_TONE);
-        g2.fill(naveConnector);
+        Rectangle2D.Double aisles = insetRect(nave, nave.width * 0.26, 0);
+        g2.setColor(new Color(224, 210, 182));
+        g2.fill(aisles);
 
-        Rectangle2D.Double apse = createEdgeStrip(nave, opposite(entrance), perpendicularSpan(rect, entrance) * 0.22);
-        g2.setColor(new Color(226, 210, 182));
+        Rectangle2D.Double transept = createTransept(nave, entrance, perpendicularSpan(rect, entrance) * 0.24);
+        g2.setColor(new Color(226, 214, 188));
+        g2.fill(transept);
+
+        Rectangle2D.Double crossing = insetRect(transept, transept.width * 0.25, transept.height * 0.25);
+        g2.setColor(new Color(221, 206, 178));
+        g2.fill(crossing);
+
+        Rectangle2D.Double apse = createApse(nave, entrance, perpendicularSpan(rect, entrance) * 0.22);
+        g2.setColor(new Color(221, 209, 180));
         g2.fill(apse);
 
-        Rectangle2D.Double transept = createEdgeStrip(nave, rotateClockwise(entrance), orientedSpan(nave, entrance) * 0.36);
-        g2.setColor(new Color(227, 214, 189));
-        g2.fill(transept);
+        Rectangle2D.Double choir = insetRect(apse, apse.width * 0.18, apse.height * 0.18);
+        g2.setColor(new Color(214, 198, 163));
+        g2.fill(choir);
 
-        transept = createEdgeStrip(nave, rotateCounterClockwise(entrance), orientedSpan(nave, entrance) * 0.36);
-        g2.fill(transept);
+        Rectangle2D.Double ambulatory = insetRect(apse, apse.width * 0.06, apse.height * 0.08);
+        g2.setColor(new Color(214, 198, 163));
+        g2.draw(ambulatory);
+
+        Rectangle2D.Double chapelsNorth = orientedLocalRect(rect, entrance, 0, perpendicularSpan(rect, entrance) * 0.42, rect.width * 0.16, perpendicularSpan(rect, entrance) * 0.26);
+        Rectangle2D.Double chapelsSouth = orientedLocalRect(rect, entrance, rect.width - chapelsNorth.width, perpendicularSpan(rect, entrance) * 0.42, chapelsNorth.width, perpendicularSpan(rect, entrance) * 0.26);
+        g2.setColor(new Color(209, 194, 170));
+        g2.fill(chapelsNorth);
+        g2.fill(chapelsSouth);
 
         drawColonnade(g2, nave, entrance);
-        drawRectOutlineWithDoor(g2, nave, entrance, naveConnector);
-        drawEdgeWall(g2, nave, opposite(entrance), null, 0.0);
 
         g2.setColor(WALL_TONE);
         g2.setStroke(new BasicStroke(3.4f));
-        Rectangle2D.Double innerAisle = insetRect(nave, nave.width * 0.15, nave.height * 0.1);
-        g2.draw(innerAisle);
+        g2.draw(nave);
+        g2.draw(transept);
+        g2.draw(apse);
+        g2.draw(chapelsNorth);
+        g2.draw(chapelsSouth);
+        g2.draw(narthex);
 
         g2.dispose();
     }
@@ -673,10 +900,12 @@ public class ByzantineCityBlockGenerator {
         g2.dispose();
     }
 
-    private void drawOuterWall(Graphics2D g, Rectangle2D.Double rect, Edge entrance, double doorSpan) {
+    private void drawOuterWall(Graphics2D g, Rectangle2D.Double rect, Edge entrance, double doorSpan, EnumSet<Edge> partyWalls) {
         g.setColor(WALL_TONE);
-        g.setStroke(new BasicStroke(6f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER));
+        BasicStroke exterior = new BasicStroke(6f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER);
+        BasicStroke shared = new BasicStroke(4.5f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER);
         if (entrance == null) {
+            g.setStroke(partyWalls.isEmpty() ? exterior : shared);
             g.draw(rect);
             return;
         }
@@ -684,31 +913,47 @@ public class ByzantineCityBlockGenerator {
         switch (entrance) {
             case NORTH:
                 doorCenter = rect.getCenterX();
+                g.setStroke(partyWalls.contains(Edge.NORTH) ? shared : exterior);
                 drawLineWithGap(g, rect.x, rect.y, rect.getMaxX(), rect.y, doorCenter, doorSpan, true);
+                g.setStroke(partyWalls.contains(Edge.WEST) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.y, rect.x, rect.getMaxY()));
+                g.setStroke(partyWalls.contains(Edge.EAST) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.getMaxX(), rect.y, rect.getMaxX(), rect.getMaxY()));
+                g.setStroke(partyWalls.contains(Edge.SOUTH) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.getMaxY(), rect.getMaxX(), rect.getMaxY()));
                 break;
             case SOUTH:
                 doorCenter = rect.getCenterX();
+                g.setStroke(partyWalls.contains(Edge.NORTH) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.y, rect.getMaxX(), rect.y));
+                g.setStroke(partyWalls.contains(Edge.WEST) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.y, rect.x, rect.getMaxY()));
+                g.setStroke(partyWalls.contains(Edge.EAST) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.getMaxX(), rect.y, rect.getMaxX(), rect.getMaxY()));
+                g.setStroke(partyWalls.contains(Edge.SOUTH) ? shared : exterior);
                 drawLineWithGap(g, rect.x, rect.getMaxY(), rect.getMaxX(), rect.getMaxY(), doorCenter, doorSpan, true);
                 break;
             case EAST:
                 doorCenter = rect.getCenterY();
+                g.setStroke(partyWalls.contains(Edge.NORTH) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.y, rect.getMaxX(), rect.y));
+                g.setStroke(partyWalls.contains(Edge.EAST) ? shared : exterior);
                 drawLineWithGap(g, rect.getMaxX(), rect.y, rect.getMaxX(), rect.getMaxY(), doorCenter, doorSpan, false);
+                g.setStroke(partyWalls.contains(Edge.SOUTH) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.getMaxY(), rect.getMaxX(), rect.getMaxY()));
+                g.setStroke(partyWalls.contains(Edge.WEST) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.y, rect.x, rect.getMaxY()));
                 break;
             case WEST:
             default:
                 doorCenter = rect.getCenterY();
+                g.setStroke(partyWalls.contains(Edge.WEST) ? shared : exterior);
                 drawLineWithGap(g, rect.x, rect.y, rect.x, rect.getMaxY(), doorCenter, doorSpan, false);
+                g.setStroke(partyWalls.contains(Edge.EAST) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.getMaxX(), rect.y, rect.getMaxX(), rect.getMaxY()));
+                g.setStroke(partyWalls.contains(Edge.NORTH) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.y, rect.getMaxX(), rect.y));
+                g.setStroke(partyWalls.contains(Edge.SOUTH) ? shared : exterior);
                 g.draw(new Line2D.Double(rect.x, rect.getMaxY(), rect.getMaxX(), rect.getMaxY()));
                 break;
         }
@@ -716,6 +961,61 @@ public class ByzantineCityBlockGenerator {
 
     private Rectangle2D.Double insetRect(Rectangle2D.Double rect, double insetX, double insetY) {
         return new Rectangle2D.Double(rect.x + insetX, rect.y + insetY, rect.width - 2 * insetX, rect.height - 2 * insetY);
+    }
+
+    private Rectangle2D.Double orientedLocalRect(Rectangle2D.Double rect, Edge entrance, double localX, double localY, double width, double height) {
+        width = Math.max(0, width);
+        height = Math.max(0, height);
+        switch (entrance) {
+            case NORTH:
+                return new Rectangle2D.Double(
+                        rect.getMaxX() - (localX + width),
+                        rect.y + localY,
+                        width,
+                        height
+                );
+            case EAST:
+                return new Rectangle2D.Double(
+                        rect.getMaxX() - (localY + height),
+                        rect.getMaxY() - (localX + width),
+                        height,
+                        width
+                );
+            case WEST:
+                return new Rectangle2D.Double(
+                        rect.x + localY,
+                        rect.y + localX,
+                        height,
+                        width
+                );
+            case SOUTH:
+            default:
+                return new Rectangle2D.Double(
+                        rect.x + localX,
+                        rect.getMaxY() - (localY + height),
+                        width,
+                        height
+                );
+        }
+    }
+
+    private Rectangle2D.Double createTransept(Rectangle2D.Double nave, Edge entrance, double thickness) {
+        double span = orientedSpan(nave, entrance);
+        double depth = perpendicularSpan(nave, entrance);
+        double clampedThickness = Math.min(thickness, depth);
+        double start = Math.max(0, depth * 0.52 - clampedThickness / 2.0);
+        if (start + clampedThickness > depth) {
+            start = depth - clampedThickness;
+        }
+        return orientedLocalRect(nave, entrance, 0, start, span, clampedThickness);
+    }
+
+    private Rectangle2D.Double createApse(Rectangle2D.Double nave, Edge entrance, double depth) {
+        double span = orientedSpan(nave, entrance);
+        double margin = Math.max(12, span * 0.18);
+        double width = Math.max(span - margin * 2, span * 0.45);
+        double start = Math.max(0, perpendicularSpan(nave, entrance) - depth);
+        return orientedLocalRect(nave, entrance, (span - width) / 2.0, start, width, Math.min(depth, perpendicularSpan(nave, entrance)));
     }
 
     private Rectangle2D.Double createEdgeStrip(Rectangle2D.Double rect, Edge edge, double depth) {
@@ -730,6 +1030,13 @@ public class ByzantineCityBlockGenerator {
             default:
                 return new Rectangle2D.Double(rect.x, rect.y, depth, rect.height);
         }
+    }
+
+    private double clamp(double value, double min, double max) {
+        if (max < min) {
+            return min;
+        }
+        return Math.max(min, Math.min(max, value));
     }
 
     private Rectangle2D.Double createConnector(Rectangle2D.Double outer, Rectangle2D.Double inner, Edge edge, double ratio) {
@@ -979,6 +1286,26 @@ public class ByzantineCityBlockGenerator {
         }
     }
 
+    private void drawPeristyleColonnade(Graphics2D g, Rectangle2D.Double peristyle) {
+        g.setColor(new Color(155, 130, 98));
+        int columns = 6;
+        double spacingX = peristyle.width / (columns + 1);
+        double spacingY = peristyle.height / (columns + 1);
+        double size = Math.min(spacingX, spacingY) * 0.35;
+        for (int i = 1; i <= columns; i++) {
+            double x = peristyle.x + i * spacingX;
+            double y = peristyle.y + peristyle.height * 0.18;
+            g.fill(new Rectangle2D.Double(x - size / 2.0, y - size / 2.0, size, size));
+            g.fill(new Rectangle2D.Double(x - size / 2.0, peristyle.getMaxY() - peristyle.height * 0.18 - size / 2.0, size, size));
+        }
+        for (int j = 1; j <= columns; j++) {
+            double y = peristyle.y + j * spacingY;
+            double x = peristyle.x + peristyle.width * 0.18;
+            g.fill(new Rectangle2D.Double(x - size / 2.0, y - size / 2.0, size, size));
+            g.fill(new Rectangle2D.Double(peristyle.getMaxX() - peristyle.width * 0.18 - size / 2.0, y - size / 2.0, size, size));
+        }
+    }
+
     private Edge findEntranceSide(Parcel parcel) {
         Rectangle2D.Double rect = parcel.rect;
         Edge bestEdge = null;
@@ -1011,6 +1338,18 @@ public class ByzantineCityBlockGenerator {
             }
         }
         return score;
+    }
+
+    private boolean touchesAnyRoad(Rectangle2D.Double rect, Edge edge) {
+        if (currentRoads == null) {
+            return false;
+        }
+        for (Road road : currentRoads) {
+            if (touchesRoad(rect, edge, road.rect)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean touchesPerimeter(Rectangle2D.Double rect, Edge edge) {
@@ -1053,6 +1392,34 @@ public class ByzantineCityBlockGenerator {
             default:
                 if (Math.abs(rect.x - road.getMaxX()) < epsilon) {
                     return segmentsOverlap(rect.y, rect.getMaxY(), road.y, road.getMaxY());
+                }
+                break;
+        }
+        return false;
+    }
+
+    private boolean touchesParcel(Rectangle2D.Double rect, Edge edge, Rectangle2D.Double other) {
+        double epsilon = 0.5;
+        switch (edge) {
+            case NORTH:
+                if (Math.abs(rect.y - other.getMaxY()) < epsilon) {
+                    return segmentsOverlap(rect.x, rect.getMaxX(), other.x, other.getMaxX());
+                }
+                break;
+            case SOUTH:
+                if (Math.abs(rect.getMaxY() - other.y) < epsilon) {
+                    return segmentsOverlap(rect.x, rect.getMaxX(), other.x, other.getMaxX());
+                }
+                break;
+            case EAST:
+                if (Math.abs(rect.getMaxX() - other.x) < epsilon) {
+                    return segmentsOverlap(rect.y, rect.getMaxY(), other.y, other.getMaxY());
+                }
+                break;
+            case WEST:
+            default:
+                if (Math.abs(rect.x - other.getMaxX()) < epsilon) {
+                    return segmentsOverlap(rect.y, rect.getMaxY(), other.y, other.getMaxY());
                 }
                 break;
         }
