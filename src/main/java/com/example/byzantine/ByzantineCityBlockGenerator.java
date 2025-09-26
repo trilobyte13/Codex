@@ -35,9 +35,9 @@ import java.util.Random;
  */
 public class ByzantineCityBlockGenerator {
 
-    private static final double SCALE = 2.0;
-    private static final int IMAGE_WIDTH = (int) Math.round(900 * SCALE);
-    private static final int IMAGE_HEIGHT = (int) Math.round(900 * SCALE);
+    private static final double SCALE = 2.35;
+    private static final int IMAGE_WIDTH = 2000;
+    private static final int IMAGE_HEIGHT = 2300;
     private static final int MARGIN = (int) Math.round(40 * SCALE);
     private static final int PERIMETER_ROAD = (int) Math.round(70 * SCALE);
     private static final int MIN_PARCEL_SIZE = (int) Math.round(90 * SCALE);
@@ -76,12 +76,44 @@ public class ByzantineCityBlockGenerator {
         g.fillRect(0, 0, IMAGE_WIDTH, IMAGE_HEIGHT);
 
         LegendLayout legendLayout = measureLegend(g);
-        double legendSpacing = legendLayout != null ? Math.max(MARGIN, Math.round(32 * SCALE)) : 0;
-        double blockWidth = IMAGE_WIDTH - 2 * MARGIN - (legendLayout != null ? legendLayout.width + legendSpacing : 0);
+        double blockWidth = IMAGE_WIDTH - 2 * MARGIN;
         if (blockWidth < MIN_PARCEL_SIZE * 2) {
             blockWidth = MIN_PARCEL_SIZE * 2;
         }
-        Rectangle2D.Double block = new Rectangle2D.Double(MARGIN, MARGIN, blockWidth, IMAGE_HEIGHT - 2 * MARGIN);
+        double availableHeight = IMAGE_HEIGHT - 2 * MARGIN;
+        double blockHeight = availableHeight;
+        double legendSpacing = 0;
+        if (legendLayout != null) {
+            double minSpacing = Math.round(18 * SCALE);
+            double desiredSpacing = Math.max(Math.round(24 * SCALE), Math.round(MARGIN * 0.6));
+            legendSpacing = Math.max(desiredSpacing, minSpacing);
+            blockHeight = availableHeight - legendLayout.height - legendSpacing;
+            if (blockHeight < MIN_PARCEL_SIZE * 2) {
+                blockHeight = MIN_PARCEL_SIZE * 2;
+            }
+            double remaining = availableHeight - legendLayout.height - blockHeight;
+            if (remaining < legendSpacing) {
+                legendSpacing = Math.max(minSpacing, remaining);
+            }
+            if (legendSpacing < 0) {
+                legendSpacing = 0;
+            }
+            double total = blockHeight + legendSpacing + legendLayout.height;
+            if (total > availableHeight) {
+                double excess = total - availableHeight;
+                double reducible = Math.max(0, blockHeight - MIN_PARCEL_SIZE * 2);
+                double reduceBlock = Math.min(reducible, excess);
+                blockHeight -= reduceBlock;
+                excess -= reduceBlock;
+                if (excess > 0) {
+                    legendSpacing = Math.max(0, legendSpacing - excess);
+                }
+            }
+        }
+        if (blockHeight > availableHeight) {
+            blockHeight = availableHeight;
+        }
+        Rectangle2D.Double block = new Rectangle2D.Double(MARGIN, MARGIN, blockWidth, blockHeight);
         Rectangle2D.Double buildable = new Rectangle2D.Double(
                 block.x + PERIMETER_ROAD,
                 block.y + PERIMETER_ROAD,
@@ -101,8 +133,10 @@ public class ByzantineCityBlockGenerator {
         drawParcels(g, parcels);
         annotateParcels(g, parcels);
         if (legendLayout != null) {
-            double legendX = block.x + block.width + legendSpacing;
-            double legendY = MARGIN;
+            double legendX = block.x + (block.width - legendLayout.width) / 2.0;
+            legendX = Math.max(MARGIN, Math.min(IMAGE_WIDTH - MARGIN - legendLayout.width, legendX));
+            double legendY = block.y + block.height + legendSpacing;
+            legendY = Math.min(IMAGE_HEIGHT - MARGIN - legendLayout.height, legendY);
             drawLegend(g, legendLayout, legendX, legendY);
         }
 
@@ -114,7 +148,7 @@ public class ByzantineCityBlockGenerator {
         g.setColor(ROAD_COLOR);
         g.fill(block);
         g.setColor(new Color(210, 195, 166));
-        g.setStroke(new BasicStroke(6f));
+        g.setStroke(new BasicStroke(5.2f));
         g.draw(block);
 
         g.setColor(BACKGROUND_COLOR);
@@ -202,8 +236,16 @@ public class ByzantineCityBlockGenerator {
         if (smallestSide < MIN_PARCEL_SIZE) {
             return false;
         }
-        double probability = 0.35 + 0.3 * (largestSide / (buildableExtent()));
-        return random.nextDouble() < probability;
+        double area = rect.width * rect.height;
+        double normalizedSide = Math.min(largestSide, buildableExtent()) / buildableExtent();
+        double probability = 0.22 + 0.25 * normalizedSide;
+        if (area > MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 4.5) {
+            probability += 0.12;
+        }
+        if (area > MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 7) {
+            probability += 0.08;
+        }
+        return random.nextDouble() < Math.min(0.85, probability);
     }
 
     private boolean splitCreatesAlley(Rectangle2D.Double rect) {
@@ -214,9 +256,9 @@ public class ByzantineCityBlockGenerator {
         }
         double area = rect.width * rect.height;
         double thresholdArea = MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 3.2;
-        double probability = 0.18;
+        double probability = 0.14;
         if (area > thresholdArea * 1.8) {
-            probability += 0.08;
+            probability += 0.07;
         }
         return random.nextDouble() < probability;
     }
@@ -509,7 +551,7 @@ public class ByzantineCityBlockGenerator {
             g.fill(road.rect);
             Graphics2D g2 = (Graphics2D) g.create();
             g2.setColor(new Color(180, 160, 130));
-            g2.setStroke(new BasicStroke(Math.max(2f, (float) (road.width / 4.5))));
+            g2.setStroke(new BasicStroke(Math.max(1.8f, (float) (road.width / 5.2))));
             g2.draw(road.rect);
             g2.dispose();
         }
@@ -529,7 +571,7 @@ public class ByzantineCityBlockGenerator {
             planGraphics.dispose();
 
             g.setColor(type.strokeColor);
-            g.setStroke(new BasicStroke(3.5f));
+            g.setStroke(new BasicStroke(3.0f));
             g.draw(parcel.rect);
         }
     }
@@ -710,7 +752,7 @@ public class ByzantineCityBlockGenerator {
         g2.fill(lararium);
 
         g2.setColor(WALL_TONE);
-        g2.setStroke(new BasicStroke(3.3f));
+        g2.setStroke(new BasicStroke(2.8f));
         g2.draw(vestibulum);
         g2.draw(fauces);
         g2.draw(atrium);
@@ -886,7 +928,7 @@ public class ByzantineCityBlockGenerator {
         g2.setColor(new Color(221, 205, 178));
         g2.fill(tabernae);
         g2.setColor(WALL_TONE);
-        g2.setStroke(new BasicStroke(3.2f));
+        g2.setStroke(new BasicStroke(2.7f));
         int shopCount = Math.max(3, (int) Math.round(span / (140.0 * SCALE))) + random.nextInt(2);
         double shopWidth = tabernae.width / shopCount;
         for (int i = 1; i < shopCount; i++) {
@@ -909,7 +951,7 @@ public class ByzantineCityBlockGenerator {
 
         Rectangle2D.Double westRooms = orientedLocalRect(rect, entrance, 0, cursor, wingWidth, courtyardDepth * 0.55);
         Rectangle2D.Double eastRooms = orientedLocalRect(rect, entrance, span - wingWidth, cursor, wingWidth, courtyardDepth * 0.55);
-        g2.setStroke(new BasicStroke(3.1f));
+        g2.setStroke(new BasicStroke(2.6f));
         g2.draw(westRooms);
         g2.draw(eastRooms);
 
@@ -935,7 +977,7 @@ public class ByzantineCityBlockGenerator {
         g2.setColor(new Color(182, 204, 214));
         g2.fill(cistern);
         g2.setColor(WALL_TONE);
-        g2.setStroke(new BasicStroke(3.1f));
+        g2.setStroke(new BasicStroke(2.6f));
         g2.draw(cistern);
 
         double wellRadius = Math.min(courtyard.width, courtyard.height) * 0.12;
@@ -967,6 +1009,7 @@ public class ByzantineCityBlockGenerator {
         g2.fill(stairRearRight);
 
         g2.setColor(WALL_TONE);
+        g2.setStroke(new BasicStroke(2.6f));
         g2.draw(arcade);
         g2.draw(tabernae);
         g2.draw(westWing);
@@ -1088,7 +1131,7 @@ public class ByzantineCityBlockGenerator {
         g2.fill(servicePassage);
 
         g2.setColor(WALL_TONE);
-        g2.setStroke(new BasicStroke(3.2f));
+        g2.setStroke(new BasicStroke(2.7f));
         g2.draw(arcade);
         g2.draw(storerooms);
         g2.draw(offices);
@@ -1238,7 +1281,7 @@ public class ByzantineCityBlockGenerator {
         drawColonnade(g2, nave, entrance);
 
         g2.setColor(WALL_TONE);
-        g2.setStroke(new BasicStroke(3.4f));
+        g2.setStroke(new BasicStroke(2.9f));
         g2.draw(nave);
         g2.draw(northAisle);
         g2.draw(southAisle);
@@ -1270,10 +1313,10 @@ public class ByzantineCityBlockGenerator {
         g2.fill(rect);
 
         g2.setColor(new Color(120, 90, 60, 180));
-        g2.setStroke(new BasicStroke(6f));
+        g2.setStroke(new BasicStroke(4.6f));
         g2.draw(rect);
 
-        g2.setStroke(new BasicStroke(8f));
+        g2.setStroke(new BasicStroke(6.4f));
         Rectangle2D.Double crossPathH = new Rectangle2D.Double(rect.x, rect.getCenterY() - rect.height * 0.05, rect.width, rect.height * 0.1);
         Rectangle2D.Double crossPathV = new Rectangle2D.Double(rect.getCenterX() - rect.width * 0.05, rect.y, rect.width * 0.1, rect.height);
         g2.setColor(new Color(214, 198, 163));
@@ -1292,8 +1335,8 @@ public class ByzantineCityBlockGenerator {
 
     private void drawOuterWall(Graphics2D g, Rectangle2D.Double rect, Edge entrance, double doorSpan, EnumSet<Edge> partyWalls) {
         g.setColor(WALL_TONE);
-        BasicStroke exterior = new BasicStroke(6f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER);
-        BasicStroke shared = new BasicStroke(4.5f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER);
+        BasicStroke exterior = new BasicStroke(4.8f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER);
+        BasicStroke shared = new BasicStroke(3.4f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER);
         if (entrance == null) {
             g.setStroke(partyWalls.isEmpty() ? exterior : shared);
             g.draw(rect);
@@ -1487,7 +1530,7 @@ public class ByzantineCityBlockGenerator {
         g.fill(wing);
 
         g.setColor(WALL_TONE);
-        g.setStroke(new BasicStroke(3f));
+        g.setStroke(new BasicStroke(2.6f));
         if (rooms <= 1) {
             return;
         }
@@ -1514,7 +1557,7 @@ public class ByzantineCityBlockGenerator {
         g.fill(area);
 
         g.setColor(WALL_TONE);
-        g.setStroke(new BasicStroke(3.2f));
+        g.setStroke(new BasicStroke(2.6f));
         if (partitions <= 1) {
             return;
         }
@@ -1535,7 +1578,7 @@ public class ByzantineCityBlockGenerator {
 
     private void drawRectOutlineWithDoor(Graphics2D g, Rectangle2D.Double rect, Edge doorwaySide, Rectangle2D.Double connector) {
         g.setColor(WALL_TONE);
-        g.setStroke(new BasicStroke(3.4f));
+        g.setStroke(new BasicStroke(2.9f));
         if (doorwaySide == null) {
             g.draw(rect);
             return;
