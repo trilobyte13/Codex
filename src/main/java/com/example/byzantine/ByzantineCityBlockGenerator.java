@@ -358,6 +358,10 @@ public class ByzantineCityBlockGenerator {
         Rectangle2D.Double second;
         Rectangle2D.Double roadRect;
         if (vertical) {
+            if (!edgeHasStreetOrRoad(rect, Edge.NORTH, innerRoads)
+                    || !edgeHasStreetOrRoad(rect, Edge.SOUTH, innerRoads)) {
+                return false;
+            }
             if (rect.width <= roadWidth + minDepth * 2) {
                 return false;
             }
@@ -376,6 +380,10 @@ public class ByzantineCityBlockGenerator {
             second = new Rectangle2D.Double(splitX + roadWidth / 2.0, rect.y, rightWidth, rect.height);
             roadRect = new Rectangle2D.Double(splitX - roadWidth / 2.0, rect.y, roadWidth, rect.height);
         } else {
+            if (!edgeHasStreetOrRoad(rect, Edge.WEST, innerRoads)
+                    || !edgeHasStreetOrRoad(rect, Edge.EAST, innerRoads)) {
+                return false;
+            }
             if (rect.height <= roadWidth + minDepth * 2) {
                 return false;
             }
@@ -405,6 +413,20 @@ public class ByzantineCityBlockGenerator {
         parcels.add(new Parcel(second));
         innerRoads.add(new Road(roadRect, roadWidth));
         return true;
+    }
+
+    private boolean edgeHasStreetOrRoad(Rectangle2D.Double rect, Edge edge, List<Road> innerRoads) {
+        if (touchesPerimeter(rect, edge)) {
+            return true;
+        }
+        if (innerRoads != null) {
+            for (Road road : innerRoads) {
+                if (touchesRoad(rect, edge, road.rect)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void ensureParcelCount(List<Parcel> parcels, int minCount) {
@@ -542,11 +564,16 @@ public class ByzantineCityBlockGenerator {
             return;
         }
 
-        Parcel churchParcel = chooseCentralParcel(parcels);
+        List<Parcel> cornerParcels = findCornerParcels(parcels);
+
+        Parcel churchParcel = chooseChurchParcel(parcels, cornerParcels);
         churchParcel.type = BuildingType.CHURCH;
 
         int tenements = Math.max(1, parcels.size() / 6);
-        int assignedTenements = assignLargestParcels(parcels, BuildingType.TENEMENT, tenements, churchParcel);
+        int assignedTenements = assignCornerTenements(cornerParcels, churchParcel, tenements);
+        if (assignedTenements < tenements) {
+            assignedTenements += assignLargestParcels(parcels, BuildingType.TENEMENT, tenements - assignedTenements, churchParcel);
+        }
         if (assignedTenements == 0) {
             assignFallbackByArea(parcels, BuildingType.TENEMENT, churchParcel);
         }
@@ -569,6 +596,75 @@ public class ByzantineCityBlockGenerator {
         enforceMaximumBuildingCount(parcels, 20, 8);
     }
 
+    private List<Parcel> findCornerParcels(List<Parcel> parcels) {
+        List<Parcel> corners = new ArrayList<Parcel>();
+        for (Parcel parcel : parcels) {
+            Rectangle2D.Double rect = parcel.rect;
+            boolean north = touchesPerimeter(rect, Edge.NORTH);
+            boolean south = touchesPerimeter(rect, Edge.SOUTH);
+            boolean east = touchesPerimeter(rect, Edge.EAST);
+            boolean west = touchesPerimeter(rect, Edge.WEST);
+            if ((north && west) || (north && east) || (south && west) || (south && east)) {
+                corners.add(parcel);
+            }
+        }
+        Collections.sort(corners, new Comparator<Parcel>() {
+            @Override
+            public int compare(Parcel a, Parcel b) {
+                return Double.compare(b.area(), a.area());
+            }
+        });
+        return corners;
+    }
+
+    private Parcel chooseChurchParcel(List<Parcel> parcels, List<Parcel> cornerParcels) {
+        if (cornerParcels != null) {
+            for (Parcel parcel : cornerParcels) {
+                if (parcel.type == BuildingType.UNASSIGNED) {
+                    return parcel;
+                }
+            }
+        }
+        return chooseCentralParcel(parcels);
+    }
+
+    private int assignCornerTenements(List<Parcel> cornerParcels, Parcel churchParcel, int count) {
+        if (cornerParcels == null || cornerParcels.isEmpty()) {
+            return 0;
+        }
+        List<Parcel> candidates = new ArrayList<Parcel>();
+        for (Parcel parcel : cornerParcels) {
+            if (parcel == churchParcel) {
+                continue;
+            }
+            if (parcel.type != BuildingType.UNASSIGNED) {
+                continue;
+            }
+            candidates.add(parcel);
+        }
+        Collections.sort(candidates, new Comparator<Parcel>() {
+            @Override
+            public int compare(Parcel a, Parcel b) {
+                double ratioA = Math.abs(aspectRatio(a.rect) - 1.0);
+                double ratioB = Math.abs(aspectRatio(b.rect) - 1.0);
+                int cmp = Double.compare(ratioA, ratioB);
+                if (cmp != 0) {
+                    return cmp;
+                }
+                return Double.compare(b.area(), a.area());
+            }
+        });
+        int assigned = 0;
+        for (Parcel parcel : candidates) {
+            if (assigned >= count) {
+                break;
+            }
+            parcel.type = BuildingType.TENEMENT;
+            assigned++;
+        }
+        return assigned;
+    }
+
     private Parcel chooseCentralParcel(List<Parcel> parcels) {
         double centerX = IMAGE_WIDTH / 2.0;
         double centerY = IMAGE_HEIGHT / 2.0;
@@ -589,6 +685,9 @@ public class ByzantineCityBlockGenerator {
     }
 
     private int assignLargestParcels(List<Parcel> parcels, BuildingType type, int count, Parcel exclude) {
+        if (count <= 0) {
+            return 0;
+        }
         int assigned = 0;
         for (Parcel parcel : parcels) {
             if (parcel == exclude) {
@@ -2304,31 +2403,75 @@ public class ByzantineCityBlockGenerator {
             }
         }
 
-        Edge bestEdge = null;
-        double bestScore = -1;
         Edge orientation = parcel.orientation;
+        List<Edge> streetEdges = new ArrayList<Edge>();
+        List<Edge> alleyEdges = new ArrayList<Edge>();
         for (Edge edge : Edge.values()) {
-            double score = 0;
             if (touchesPerimeter(rect, edge)) {
-                score += edgeLength(rect, edge) * 2.0;
+                streetEdges.add(edge);
+            } else if (edgeTouchesInnerRoad(rect, edge)) {
+                alleyEdges.add(edge);
             }
-            score += roadContactScore(rect, edge);
+        }
+
+        Edge best = chooseBestAccessibleEdge(rect, orientation, streetEdges, true);
+        if (best != null) {
+            return best;
+        }
+        best = chooseBestAccessibleEdge(rect, orientation, alleyEdges, false);
+        if (best != null) {
+            return best;
+        }
+
+        if (orientation != null && edgeHasAccess(rect, orientation)) {
+            return orientation;
+        }
+        for (Edge edge : Edge.values()) {
+            if (edgeHasAccess(rect, edge)) {
+                return edge;
+            }
+        }
+        return Edge.SOUTH;
+    }
+
+    private Edge chooseBestAccessibleEdge(Rectangle2D.Double rect, Edge orientation, List<Edge> candidates, boolean streetPreferred) {
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        Edge best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (Edge edge : candidates) {
+            double score = edgeLength(rect, edge);
+            if (!streetPreferred) {
+                score += roadContactScore(rect, edge);
+            } else {
+                score *= 1.25;
+            }
             if (orientation != null) {
                 if (edge == orientation) {
                     score += Math.max(rect.width, rect.height);
                 } else if (edge == opposite(orientation)) {
-                    score += Math.max(rect.width, rect.height) * 0.5;
+                    score += Math.max(rect.width, rect.height) * 0.45;
                 }
             }
             if (score > bestScore) {
                 bestScore = score;
-                bestEdge = edge;
+                best = edge;
             }
         }
-        if (bestEdge == null) {
-            bestEdge = Edge.SOUTH;
+        return best;
+    }
+
+    private boolean edgeTouchesInnerRoad(Rectangle2D.Double rect, Edge edge) {
+        if (currentRoads == null) {
+            return false;
         }
-        return bestEdge;
+        for (Road road : currentRoads) {
+            if (touchesRoad(rect, edge, road.rect)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private double roadContactScore(Rectangle2D.Double rect, Edge edge) {
