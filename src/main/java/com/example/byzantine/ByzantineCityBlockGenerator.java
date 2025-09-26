@@ -75,7 +75,13 @@ public class ByzantineCityBlockGenerator {
         g.setColor(BACKGROUND_COLOR);
         g.fillRect(0, 0, IMAGE_WIDTH, IMAGE_HEIGHT);
 
-        Rectangle2D.Double block = new Rectangle2D.Double(MARGIN, MARGIN, IMAGE_WIDTH - 2 * MARGIN, IMAGE_HEIGHT - 2 * MARGIN);
+        LegendLayout legendLayout = measureLegend(g);
+        double legendSpacing = legendLayout != null ? Math.max(MARGIN, Math.round(32 * SCALE)) : 0;
+        double blockWidth = IMAGE_WIDTH - 2 * MARGIN - (legendLayout != null ? legendLayout.width + legendSpacing : 0);
+        if (blockWidth < MIN_PARCEL_SIZE * 2) {
+            blockWidth = MIN_PARCEL_SIZE * 2;
+        }
+        Rectangle2D.Double block = new Rectangle2D.Double(MARGIN, MARGIN, blockWidth, IMAGE_HEIGHT - 2 * MARGIN);
         Rectangle2D.Double buildable = new Rectangle2D.Double(
                 block.x + PERIMETER_ROAD,
                 block.y + PERIMETER_ROAD,
@@ -94,7 +100,11 @@ public class ByzantineCityBlockGenerator {
         drawInnerRoads(g, innerRoads);
         drawParcels(g, parcels);
         annotateParcels(g, parcels);
-        drawLegend(g, parcels);
+        if (legendLayout != null) {
+            double legendX = block.x + block.width + legendSpacing;
+            double legendY = MARGIN;
+            drawLegend(g, legendLayout, legendX, legendY);
+        }
 
         g.dispose();
         return image;
@@ -131,28 +141,50 @@ public class ByzantineCityBlockGenerator {
             Rectangle2D.Double current = queue.removeFirst();
             if (shouldSplit(current)) {
                 boolean splitVertical = decideSplitOrientation(current);
-                double roadWidth = randomRange(ROAD_WIDTH_MIN, ROAD_WIDTH_MAX);
+                boolean createAlley = splitCreatesAlley(current);
 
                 if (splitVertical) {
-                    double splitX = randomSplitCoordinate(current.x, current.x + current.width, roadWidth);
-                    Rectangle2D.Double left = new Rectangle2D.Double(current.x, current.y,
-                            splitX - roadWidth / 2.0 - current.x, current.height);
-                    Rectangle2D.Double right = new Rectangle2D.Double(splitX + roadWidth / 2.0, current.y,
-                            current.x + current.width - (splitX + roadWidth / 2.0), current.height);
-                    Rectangle2D.Double roadRect = new Rectangle2D.Double(splitX - roadWidth / 2.0, current.y, roadWidth, current.height);
-                    innerRoads.add(new Road(roadRect, roadWidth));
-                    enqueueIfValid(queue, left);
-                    enqueueIfValid(queue, right);
+                    if (createAlley) {
+                        double roadWidth = randomRange(ROAD_WIDTH_MIN, ROAD_WIDTH_MAX);
+                        double splitX = randomSplitCoordinate(current.x, current.x + current.width, roadWidth);
+                        Rectangle2D.Double left = new Rectangle2D.Double(current.x, current.y,
+                                splitX - roadWidth / 2.0 - current.x, current.height);
+                        Rectangle2D.Double right = new Rectangle2D.Double(splitX + roadWidth / 2.0, current.y,
+                                current.x + current.width - (splitX + roadWidth / 2.0), current.height);
+                        Rectangle2D.Double roadRect = new Rectangle2D.Double(splitX - roadWidth / 2.0, current.y, roadWidth, current.height);
+                        innerRoads.add(new Road(roadRect, roadWidth));
+                        enqueueIfValid(queue, left);
+                        enqueueIfValid(queue, right);
+                    } else {
+                        double splitX = randomSplitCoordinate(current.x, current.x + current.width, 0);
+                        Rectangle2D.Double left = new Rectangle2D.Double(current.x, current.y,
+                                splitX - current.x, current.height);
+                        Rectangle2D.Double right = new Rectangle2D.Double(splitX, current.y,
+                                current.x + current.width - splitX, current.height);
+                        enqueueIfValid(queue, left);
+                        enqueueIfValid(queue, right);
+                    }
                 } else {
-                    double splitY = randomSplitCoordinate(current.y, current.y + current.height, roadWidth);
-                    Rectangle2D.Double top = new Rectangle2D.Double(current.x, current.y, current.width,
-                            splitY - roadWidth / 2.0 - current.y);
-                    Rectangle2D.Double bottom = new Rectangle2D.Double(current.x, splitY + roadWidth / 2.0, current.width,
-                            current.y + current.height - (splitY + roadWidth / 2.0));
-                    Rectangle2D.Double roadRect = new Rectangle2D.Double(current.x, splitY - roadWidth / 2.0, current.width, roadWidth);
-                    innerRoads.add(new Road(roadRect, roadWidth));
-                    enqueueIfValid(queue, top);
-                    enqueueIfValid(queue, bottom);
+                    if (createAlley) {
+                        double roadWidth = randomRange(ROAD_WIDTH_MIN, ROAD_WIDTH_MAX);
+                        double splitY = randomSplitCoordinate(current.y, current.y + current.height, roadWidth);
+                        Rectangle2D.Double top = new Rectangle2D.Double(current.x, current.y, current.width,
+                                splitY - roadWidth / 2.0 - current.y);
+                        Rectangle2D.Double bottom = new Rectangle2D.Double(current.x, splitY + roadWidth / 2.0, current.width,
+                                current.y + current.height - (splitY + roadWidth / 2.0));
+                        Rectangle2D.Double roadRect = new Rectangle2D.Double(current.x, splitY - roadWidth / 2.0, current.width, roadWidth);
+                        innerRoads.add(new Road(roadRect, roadWidth));
+                        enqueueIfValid(queue, top);
+                        enqueueIfValid(queue, bottom);
+                    } else {
+                        double splitY = randomSplitCoordinate(current.y, current.y + current.height, 0);
+                        Rectangle2D.Double top = new Rectangle2D.Double(current.x, current.y, current.width,
+                                splitY - current.y);
+                        Rectangle2D.Double bottom = new Rectangle2D.Double(current.x, splitY, current.width,
+                                current.y + current.height - splitY);
+                        enqueueIfValid(queue, top);
+                        enqueueIfValid(queue, bottom);
+                    }
                 }
             } else {
                 parcels.add(new Parcel(current));
@@ -171,6 +203,21 @@ public class ByzantineCityBlockGenerator {
             return false;
         }
         double probability = 0.35 + 0.3 * (largestSide / (buildableExtent()));
+        return random.nextDouble() < probability;
+    }
+
+    private boolean splitCreatesAlley(Rectangle2D.Double rect) {
+        double largestSide = Math.max(rect.width, rect.height);
+        double smallestSide = Math.min(rect.width, rect.height);
+        if (smallestSide < MIN_PARCEL_SIZE * 1.35) {
+            return false;
+        }
+        double area = rect.width * rect.height;
+        double thresholdArea = MIN_PARCEL_SIZE * MIN_PARCEL_SIZE * 3.2;
+        double probability = 0.18;
+        if (area > thresholdArea * 1.8) {
+            probability += 0.08;
+        }
         return random.nextDouble() < probability;
     }
 
@@ -859,16 +906,6 @@ public class ByzantineCityBlockGenerator {
         g2.setColor(new Color(222, 206, 179));
         g2.fill(westWing);
         g2.fill(eastWing);
-
-        int floors = 4;
-        double floorStep = wingHeight / floors;
-        g2.setColor(WALL_TONE);
-        for (int i = 1; i < floors; i++) {
-            double yWest = westWing.y + i * floorStep;
-            double yEast = eastWing.y + i * floorStep;
-            g2.draw(new Line2D.Double(westWing.x, yWest, westWing.getMaxX(), yWest));
-            g2.draw(new Line2D.Double(eastWing.x, yEast, eastWing.getMaxX(), yEast));
-        }
 
         Rectangle2D.Double westRooms = orientedLocalRect(rect, entrance, 0, cursor, wingWidth, courtyardDepth * 0.55);
         Rectangle2D.Double eastRooms = orientedLocalRect(rect, entrance, span - wingWidth, cursor, wingWidth, courtyardDepth * 0.55);
@@ -1950,7 +1987,7 @@ public class ByzantineCityBlockGenerator {
         }
     }
 
-    private void drawLegend(Graphics2D g, List<Parcel> parcels) {
+    private LegendLayout measureLegend(Graphics2D g) {
         List<BuildingType> entries = new ArrayList<BuildingType>();
         for (BuildingType type : BuildingType.values()) {
             if (type != BuildingType.UNASSIGNED) {
@@ -1958,43 +1995,46 @@ public class ByzantineCityBlockGenerator {
             }
         }
         if (entries.isEmpty()) {
-            return;
+            return null;
         }
 
         int padding = (int) Math.max(18, Math.round(20 * SCALE));
         int swatchSize = (int) Math.max(18, Math.round(30 * SCALE));
         int gap = (int) Math.max(10, Math.round(16 * SCALE));
-        Graphics2D g2 = (Graphics2D) g.create();
-
         Font headerFont = LABEL_FONT.deriveFont(Font.BOLD, (float) Math.max(18f, (float) (20f * SCALE)));
         Font entryFont = LABEL_FONT.deriveFont(Font.PLAIN, (float) Math.max(16f, (float) (LABEL_FONT.getSize() * 0.8)));
-        g2.setFont(headerFont);
-        FontMetrics headerMetrics = g2.getFontMetrics();
-        FontMetrics entryMetrics = g2.getFontMetrics(entryFont);
+
+        FontMetrics headerMetrics = g.getFontMetrics(headerFont);
+        FontMetrics entryMetrics = g.getFontMetrics(entryFont);
         int headerHeight = headerMetrics.getHeight();
         int entryHeight = Math.max(swatchSize, entryMetrics.getHeight());
         int legendWidth = (int) Math.max(260, Math.round(320 * SCALE));
         int legendHeight = padding * 2 + headerHeight + gap + entries.size() * entryHeight + (entries.size() - 1) * gap;
         int corner = (int) Math.max(16, Math.round(24 * SCALE));
 
-        int x = IMAGE_WIDTH - MARGIN - legendWidth;
-        int y = MARGIN;
+        return new LegendLayout(entries, padding, swatchSize, gap, corner, legendWidth, legendHeight,
+                headerFont, entryFont, headerMetrics.getAscent(), headerHeight, entryMetrics.getAscent(), entryHeight);
+    }
 
-        RoundRectangle2D.Double frame = new RoundRectangle2D.Double(x, y, legendWidth, legendHeight, corner, corner);
+    private void drawLegend(Graphics2D g, LegendLayout layout, double x, double y) {
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setFont(layout.headerFont);
+
+        RoundRectangle2D.Double frame = new RoundRectangle2D.Double(x, y, layout.width, layout.height, layout.cornerRadius, layout.cornerRadius);
         g2.setColor(new Color(255, 250, 236, 235));
         g2.fill(frame);
         g2.setColor(new Color(120, 90, 60, 220));
         g2.setStroke(new BasicStroke((float) Math.max(2f, (float) (3f * SCALE / 2.0))));
         g2.draw(frame);
 
-        int headerBaseline = y + padding + headerMetrics.getAscent();
-        g2.drawString("Legend", x + padding, headerBaseline);
+        int headerBaseline = (int) Math.round(y + layout.padding + layout.headerAscent);
+        g2.drawString("Legend", (int) Math.round(x + layout.padding), headerBaseline);
 
-        g2.setFont(entryFont);
-        int currentY = y + padding + headerHeight + gap;
-        double swatchCorner = Math.max(8, corner / 2.0);
-        for (BuildingType type : entries) {
-            RoundRectangle2D.Double swatch = new RoundRectangle2D.Double(x + padding, currentY, swatchSize, swatchSize, swatchCorner, swatchCorner);
+        g2.setFont(layout.entryFont);
+        int currentY = (int) Math.round(y + layout.padding + layout.headerHeight + layout.gap);
+        double swatchCorner = Math.max(8, layout.cornerRadius / 2.0);
+        for (BuildingType type : layout.entries) {
+            RoundRectangle2D.Double swatch = new RoundRectangle2D.Double(x + layout.padding, currentY, layout.swatchSize, layout.swatchSize, swatchCorner, swatchCorner);
             g2.setColor(type.fillColor);
             g2.fill(swatch);
             g2.setColor(type.strokeColor);
@@ -2002,9 +2042,9 @@ public class ByzantineCityBlockGenerator {
             g2.draw(swatch);
 
             g2.setColor(new Color(50, 35, 20, 220));
-            float textY = (float) (currentY + swatchSize / 2.0 + entryMetrics.getAscent() / 2.5);
-            g2.drawString(type.label, (float) (x + padding + swatchSize + gap), textY);
-            currentY += entryHeight + gap;
+            float textY = (float) (currentY + layout.swatchSize / 2.0 + layout.entryAscent / 2.5);
+            g2.drawString(type.label, (float) (x + layout.padding + layout.swatchSize + layout.gap), textY);
+            currentY += layout.entryHeight + layout.gap;
         }
 
         g2.dispose();
@@ -2012,6 +2052,39 @@ public class ByzantineCityBlockGenerator {
 
     private double randomRange(double min, double max) {
         return min + random.nextDouble() * (max - min);
+    }
+
+    private static class LegendLayout {
+        final List<BuildingType> entries;
+        final int padding;
+        final int swatchSize;
+        final int gap;
+        final int cornerRadius;
+        final int width;
+        final int height;
+        final Font headerFont;
+        final Font entryFont;
+        final int headerAscent;
+        final int headerHeight;
+        final int entryAscent;
+        final int entryHeight;
+
+        LegendLayout(List<BuildingType> entries, int padding, int swatchSize, int gap, int cornerRadius, int width, int height,
+                     Font headerFont, Font entryFont, int headerAscent, int headerHeight, int entryAscent, int entryHeight) {
+            this.entries = entries;
+            this.padding = padding;
+            this.swatchSize = swatchSize;
+            this.gap = gap;
+            this.cornerRadius = cornerRadius;
+            this.width = width;
+            this.height = height;
+            this.headerFont = headerFont;
+            this.entryFont = entryFont;
+            this.headerAscent = headerAscent;
+            this.headerHeight = headerHeight;
+            this.entryAscent = entryAscent;
+            this.entryHeight = entryHeight;
+        }
     }
 
     private static class Parcel {
