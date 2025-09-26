@@ -128,8 +128,10 @@ public class ByzantineCityBlockGenerator {
         List<Road> innerRoads = new ArrayList<Road>();
         List<Parcel> parcels = subdivideBlock(buildable, innerRoads);
         ensureParcelCount(parcels, 9);
+        ensureMinimumAlleys(parcels, innerRoads);
         this.currentRoads = innerRoads;
         ensureRequiredBuildingTypes(parcels);
+        prepareParcelOrientations(parcels);
 
         drawInnerRoads(g, innerRoads);
         drawParcels(g, parcels);
@@ -144,6 +146,65 @@ public class ByzantineCityBlockGenerator {
 
         g.dispose();
         return image;
+    }
+
+    private void prepareParcelOrientations(List<Parcel> parcels) {
+        for (Parcel parcel : parcels) {
+            if (parcel.type == BuildingType.PRIVATE_HOUSE) {
+                parcel.orientation = determineHouseOrientation(parcel);
+            } else {
+                parcel.orientation = null;
+            }
+        }
+    }
+
+    private Edge determineHouseOrientation(Parcel parcel) {
+        Rectangle2D.Double rect = parcel.rect;
+        boolean horizontal = rect.width >= rect.height;
+        Edge primary = horizontal ? Edge.EAST : Edge.SOUTH;
+        if (edgeHasAccess(rect, primary)) {
+            return primary;
+        }
+        Edge secondary = opposite(primary);
+        if (edgeHasAccess(rect, secondary)) {
+            return secondary;
+        }
+        // Fallback to whichever edge offers the best access, then align the layout accordingly.
+        Edge best = primary;
+        double bestScore = -1;
+        for (Edge edge : Edge.values()) {
+            double score = accessScore(rect, edge);
+            if (score > bestScore) {
+                bestScore = score;
+                best = edge;
+            }
+        }
+        if (horizontal) {
+            if (best != Edge.EAST && best != Edge.WEST) {
+                return primary;
+            }
+        } else {
+            if (best != Edge.NORTH && best != Edge.SOUTH) {
+                return primary;
+            }
+        }
+        return best;
+    }
+
+    private boolean edgeHasAccess(Rectangle2D.Double rect, Edge edge) {
+        if (touchesPerimeter(rect, edge)) {
+            return true;
+        }
+        return roadContactScore(rect, edge) > 0.1;
+    }
+
+    private double accessScore(Rectangle2D.Double rect, Edge edge) {
+        double score = 0;
+        if (touchesPerimeter(rect, edge)) {
+            score += Math.max(10, edgeLength(rect, edge));
+        }
+        score += roadContactScore(rect, edge);
+        return score;
     }
 
     private void drawPerimeterRoad(Graphics2D g, Rectangle2D.Double block, Rectangle2D.Double buildable) {
@@ -227,6 +288,123 @@ public class ByzantineCityBlockGenerator {
             }
         }
         return parcels;
+    }
+
+    private void ensureMinimumAlleys(List<Parcel> parcels, List<Road> innerRoads) {
+        int targetAlleys = 2;
+        int attempts = 0;
+        List<Parcel> exhausted = new ArrayList<Parcel>();
+        while (innerRoads.size() < targetAlleys && attempts < parcels.size() * 2) {
+            Parcel candidate = selectAlleyCandidate(parcels, innerRoads.isEmpty(), exhausted);
+            if (candidate == null) {
+                break;
+            }
+            attempts++;
+            boolean primaryVertical = innerRoads.isEmpty()
+                    ? candidate.rect.width >= candidate.rect.height
+                    : candidate.rect.height > candidate.rect.width;
+            if (splitParcelWithRoad(parcels, innerRoads, candidate, primaryVertical)) {
+                exhausted.clear();
+                continue;
+            }
+            if (splitParcelWithRoad(parcels, innerRoads, candidate, !primaryVertical)) {
+                exhausted.clear();
+                continue;
+            }
+            exhausted.add(candidate);
+        }
+    }
+
+    private Parcel selectAlleyCandidate(List<Parcel> parcels, boolean first, List<Parcel> excluded) {
+        Parcel best = null;
+        double bestScore = -1;
+        for (Parcel parcel : parcels) {
+            if (excluded != null && excluded.contains(parcel)) {
+                continue;
+            }
+            double width = parcel.rect.width;
+            double height = parcel.rect.height;
+            double minSpan = MIN_PARCEL_SIZE * 1.1;
+            if (first) {
+                if (width < minSpan && height < minSpan) {
+                    continue;
+                }
+            } else {
+                if (width < MIN_PARCEL_SIZE * 0.9 || height < MIN_PARCEL_SIZE * 0.9) {
+                    continue;
+                }
+            }
+            double score = parcel.area();
+            if (!first) {
+                score *= (width > height) ? 0.9 : 1.0;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = parcel;
+            }
+        }
+        return best;
+    }
+
+    private boolean splitParcelWithRoad(List<Parcel> parcels, List<Road> innerRoads, Parcel target, boolean vertical) {
+        if (target == null) {
+            return false;
+        }
+        Rectangle2D.Double rect = target.rect;
+        double roadWidth = randomRange(ROAD_WIDTH_MIN, ROAD_WIDTH_MAX);
+        double minDepth = Math.max(MIN_PARCEL_SIZE * 0.9, 60);
+
+        Rectangle2D.Double first;
+        Rectangle2D.Double second;
+        Rectangle2D.Double roadRect;
+        if (vertical) {
+            if (rect.width <= roadWidth + minDepth * 2) {
+                return false;
+            }
+            double splitX = rect.x + rect.width / 2.0;
+            double leftWidth = splitX - roadWidth / 2.0 - rect.x;
+            double rightWidth = rect.getMaxX() - (splitX + roadWidth / 2.0);
+            if (leftWidth < minDepth || rightWidth < minDepth) {
+                double available = rect.width - roadWidth;
+                if (available <= minDepth * 2) {
+                    return false;
+                }
+                leftWidth = rightWidth = available / 2.0;
+                splitX = rect.x + leftWidth + roadWidth / 2.0;
+            }
+            first = new Rectangle2D.Double(rect.x, rect.y, leftWidth, rect.height);
+            second = new Rectangle2D.Double(splitX + roadWidth / 2.0, rect.y, rightWidth, rect.height);
+            roadRect = new Rectangle2D.Double(splitX - roadWidth / 2.0, rect.y, roadWidth, rect.height);
+        } else {
+            if (rect.height <= roadWidth + minDepth * 2) {
+                return false;
+            }
+            double splitY = rect.y + rect.height / 2.0;
+            double topHeight = splitY - roadWidth / 2.0 - rect.y;
+            double bottomHeight = rect.getMaxY() - (splitY + roadWidth / 2.0);
+            if (topHeight < minDepth || bottomHeight < minDepth) {
+                double available = rect.height - roadWidth;
+                if (available <= minDepth * 2) {
+                    return false;
+                }
+                topHeight = bottomHeight = available / 2.0;
+                splitY = rect.y + topHeight + roadWidth / 2.0;
+            }
+            first = new Rectangle2D.Double(rect.x, rect.y, rect.width, topHeight);
+            second = new Rectangle2D.Double(rect.x, splitY + roadWidth / 2.0, rect.width, bottomHeight);
+            roadRect = new Rectangle2D.Double(rect.x, splitY - roadWidth / 2.0, rect.width, roadWidth);
+        }
+
+        if (first.width < MIN_PARCEL_SIZE * 0.6 || first.height < MIN_PARCEL_SIZE * 0.6
+                || second.width < MIN_PARCEL_SIZE * 0.6 || second.height < MIN_PARCEL_SIZE * 0.6) {
+            return false;
+        }
+
+        parcels.remove(target);
+        parcels.add(new Parcel(first));
+        parcels.add(new Parcel(second));
+        innerRoads.add(new Road(roadRect, roadWidth));
+        return true;
     }
 
     private void ensureParcelCount(List<Parcel> parcels, int minCount) {
@@ -790,7 +968,7 @@ public class ByzantineCityBlockGenerator {
             planGraphics.clip(parcel.rect);
             Edge entrance = findEntranceSide(parcel);
             EnumSet<Edge> partyWalls = findPartyWalls(parcel, parcels);
-            drawFloorPlan(planGraphics, parcel.rect, type, entrance, partyWalls);
+            drawFloorPlan(planGraphics, parcel, entrance, partyWalls);
             planGraphics.dispose();
 
             g.setColor(type.strokeColor);
@@ -845,37 +1023,42 @@ public class ByzantineCityBlockGenerator {
         return Math.max(0, accessible);
     }
 
-    private void drawFloorPlan(Graphics2D g, Rectangle2D.Double rect, BuildingType type, Edge entrance, EnumSet<Edge> partyWalls) {
+    private void drawFloorPlan(Graphics2D g, Parcel parcel, Edge entrance, EnumSet<Edge> partyWalls) {
+        Rectangle2D.Double rect = parcel.rect;
+        BuildingType type = parcel.type != null ? parcel.type : BuildingType.PRIVATE_HOUSE;
+        Edge orientation = parcel.orientation != null ? parcel.orientation : entrance;
+
         g.setColor(FLOOR_TONE);
         g.fill(rect);
 
         switch (type) {
             case CHURCH:
-                drawChurchPlan(g, rect, entrance, partyWalls);
+                drawChurchPlan(g, rect, orientation, partyWalls);
                 break;
             case TENEMENT:
-                drawTenementPlan(g, rect, entrance, partyWalls);
+                drawTenementPlan(g, rect, orientation, partyWalls);
                 break;
             case SHOP:
-                drawShopPlan(g, rect, entrance, partyWalls);
+                drawShopPlan(g, rect, orientation, partyWalls);
                 break;
             case PARK:
                 drawParkPlan(g, rect);
                 break;
             case PRIVATE_HOUSE:
             default:
-                drawHousePlan(g, rect, entrance, partyWalls);
+                drawHousePlan(g, rect, entrance, orientation, partyWalls);
                 break;
         }
     }
 
-    private void drawHousePlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance, EnumSet<Edge> partyWalls) {
+    private void drawHousePlan(Graphics2D g, Rectangle2D.Double rect, Edge entrance, Edge orientation, EnumSet<Edge> partyWalls) {
         Graphics2D g2 = (Graphics2D) g.create();
         double doorSpan = orientedSpan(rect, entrance) * 0.24;
         drawOuterWall(g2, rect, entrance, doorSpan, partyWalls);
 
-        double span = orientedSpan(rect, entrance);
-        double depth = perpendicularSpan(rect, entrance);
+        Edge planOrientation = orientation != null ? orientation : entrance;
+        double span = orientedSpan(rect, planOrientation);
+        double depth = perpendicularSpan(rect, planOrientation);
 
         double vestibulumDepth = clamp(depth * 0.12, 26, depth * 0.18);
         double atriumDepth = clamp(depth * 0.26, 74, depth * 0.32);
@@ -925,24 +1108,24 @@ public class ByzantineCityBlockGenerator {
         double cursor = 0;
 
         double shopDepth = Math.min(vestibulumDepth * 0.9, vestibulumDepth);
-        Rectangle2D.Double tabernaLeft = orientedLocalRect(rect, entrance, 0, 0, sideBands, shopDepth);
-        Rectangle2D.Double tabernaRight = orientedLocalRect(rect, entrance, span - sideBands, 0, sideBands, shopDepth);
+        Rectangle2D.Double tabernaLeft = orientedLocalRect(rect, planOrientation, 0, 0, sideBands, shopDepth);
+        Rectangle2D.Double tabernaRight = orientedLocalRect(rect, planOrientation, span - sideBands, 0, sideBands, shopDepth);
         g2.setColor(new Color(212, 195, 164));
         g2.fill(tabernaLeft);
         g2.fill(tabernaRight);
 
-        Rectangle2D.Double vestibulum = orientedLocalRect(rect, entrance, axialMargin, cursor, axialWidth, vestibulumDepth);
+        Rectangle2D.Double vestibulum = orientedLocalRect(rect, planOrientation, axialMargin, cursor, axialWidth, vestibulumDepth);
         g2.setColor(WALKWAY_TONE);
         g2.fill(vestibulum);
 
-        Rectangle2D.Double fauces = orientedLocalRect(rect, entrance, axialMargin + axialWidth * 0.34, cursor, axialWidth * 0.32, vestibulumDepth);
+        Rectangle2D.Double fauces = orientedLocalRect(rect, planOrientation, axialMargin + axialWidth * 0.34, cursor, axialWidth * 0.32, vestibulumDepth);
         g2.setColor(new Color(223, 210, 188));
         g2.fill(fauces);
         cursor += vestibulumDepth;
 
         double atriumMargin = Math.max(axialMargin - sideBands * 0.2, 10);
         double atriumWidth = span - 2 * atriumMargin;
-        Rectangle2D.Double atrium = orientedLocalRect(rect, entrance, atriumMargin, cursor, atriumWidth, atriumDepth);
+        Rectangle2D.Double atrium = orientedLocalRect(rect, planOrientation, atriumMargin, cursor, atriumWidth, atriumDepth);
         g2.setColor(new Color(232, 219, 196));
         g2.fill(atrium);
 
@@ -954,23 +1137,23 @@ public class ByzantineCityBlockGenerator {
         g2.setColor(new Color(166, 198, 212));
         g2.fill(impluvium);
 
-        Rectangle2D.Double alaLeft = orientedLocalRect(rect, entrance, 0, cursor + atriumDepth * 0.16, sideBands, atriumDepth * 0.68);
-        Rectangle2D.Double alaRight = orientedLocalRect(rect, entrance, span - sideBands, cursor + atriumDepth * 0.16, sideBands, atriumDepth * 0.68);
+        Rectangle2D.Double alaLeft = orientedLocalRect(rect, planOrientation, 0, cursor + atriumDepth * 0.16, sideBands, atriumDepth * 0.68);
+        Rectangle2D.Double alaRight = orientedLocalRect(rect, planOrientation, span - sideBands, cursor + atriumDepth * 0.16, sideBands, atriumDepth * 0.68);
         g2.setColor(new Color(221, 206, 178));
         g2.fill(alaLeft);
         g2.fill(alaRight);
 
-        Rectangle2D.Double cubiculaFrontLeft = orientedLocalRect(rect, entrance, 0, cursor - vestibulumDepth * 0.2, sideBands, atriumDepth * 0.4);
-        Rectangle2D.Double cubiculaFrontRight = orientedLocalRect(rect, entrance, span - sideBands, cursor - vestibulumDepth * 0.2, sideBands, atriumDepth * 0.4);
-        Rectangle2D.Double cubiculaRearLeft = orientedLocalRect(rect, entrance, 0, cursor + atriumDepth * 0.54, sideBands, atriumDepth * 0.5);
-        Rectangle2D.Double cubiculaRearRight = orientedLocalRect(rect, entrance, span - sideBands, cursor + atriumDepth * 0.54, sideBands, atriumDepth * 0.5);
+        Rectangle2D.Double cubiculaFrontLeft = orientedLocalRect(rect, planOrientation, 0, cursor - vestibulumDepth * 0.2, sideBands, atriumDepth * 0.4);
+        Rectangle2D.Double cubiculaFrontRight = orientedLocalRect(rect, planOrientation, span - sideBands, cursor - vestibulumDepth * 0.2, sideBands, atriumDepth * 0.4);
+        Rectangle2D.Double cubiculaRearLeft = orientedLocalRect(rect, planOrientation, 0, cursor + atriumDepth * 0.54, sideBands, atriumDepth * 0.5);
+        Rectangle2D.Double cubiculaRearRight = orientedLocalRect(rect, planOrientation, span - sideBands, cursor + atriumDepth * 0.54, sideBands, atriumDepth * 0.5);
         g2.setColor(new Color(223, 207, 182));
         g2.fill(cubiculaFrontLeft);
         g2.fill(cubiculaFrontRight);
         g2.fill(cubiculaRearLeft);
         g2.fill(cubiculaRearRight);
 
-        Rectangle2D.Double lararium = orientedLocalRect(rect, entrance, atriumMargin + atriumWidth * 0.35, cursor + atriumDepth * 0.06, atriumWidth * 0.3, atriumDepth * 0.2);
+        Rectangle2D.Double lararium = orientedLocalRect(rect, planOrientation, atriumMargin + atriumWidth * 0.35, cursor + atriumDepth * 0.06, atriumWidth * 0.3, atriumDepth * 0.2);
         g2.setColor(new Color(214, 198, 163));
         g2.fill(lararium);
 
@@ -990,12 +1173,12 @@ public class ByzantineCityBlockGenerator {
 
         double tablinumMargin = Math.max(axialMargin + axialWidth * 0.08, atriumMargin + atriumWidth * 0.08);
         double tablinumWidth = Math.min(span - 2 * tablinumMargin, axialWidth * 0.9);
-        Rectangle2D.Double tablinum = orientedLocalRect(rect, entrance, tablinumMargin, cursor, tablinumWidth, tablinumDepth);
+        Rectangle2D.Double tablinum = orientedLocalRect(rect, planOrientation, tablinumMargin, cursor, tablinumWidth, tablinumDepth);
         g2.setColor(new Color(226, 210, 185));
         g2.fill(tablinum);
 
-        Rectangle2D.Double alaeTablinumLeft = orientedLocalRect(rect, entrance, 0, cursor, sideBands, tablinumDepth * 0.9);
-        Rectangle2D.Double alaeTablinumRight = orientedLocalRect(rect, entrance, span - sideBands, cursor, sideBands, tablinumDepth * 0.9);
+        Rectangle2D.Double alaeTablinumLeft = orientedLocalRect(rect, planOrientation, 0, cursor, sideBands, tablinumDepth * 0.9);
+        Rectangle2D.Double alaeTablinumRight = orientedLocalRect(rect, planOrientation, span - sideBands, cursor, sideBands, tablinumDepth * 0.9);
         g2.setColor(new Color(220, 204, 178));
         g2.fill(alaeTablinumLeft);
         g2.fill(alaeTablinumRight);
@@ -1009,7 +1192,7 @@ public class ByzantineCityBlockGenerator {
 
         double peristyleMargin = Math.max(sideBands * 0.6, 18);
         double peristyleWidth = span - 2 * peristyleMargin;
-        Rectangle2D.Double peristyle = orientedLocalRect(rect, entrance, peristyleMargin, cursor, peristyleWidth, peristyleDepth);
+        Rectangle2D.Double peristyle = orientedLocalRect(rect, planOrientation, peristyleMargin, cursor, peristyleWidth, peristyleDepth);
         g2.setColor(WALKWAY_TONE);
         g2.fill(peristyle);
 
@@ -1018,18 +1201,18 @@ public class ByzantineCityBlockGenerator {
         g2.fill(viridarium);
         drawPeristyleColonnade(g2, peristyle);
 
-        Rectangle2D.Double exedra = orientedLocalRect(rect, entrance, peristyleMargin + peristyleWidth * 0.22, cursor + peristyleDepth * 0.62, peristyleWidth * 0.56, peristyleDepth * 0.32);
+        Rectangle2D.Double exedra = orientedLocalRect(rect, planOrientation, peristyleMargin + peristyleWidth * 0.22, cursor + peristyleDepth * 0.62, peristyleWidth * 0.56, peristyleDepth * 0.32);
         g2.setColor(new Color(219, 205, 180));
         g2.fill(exedra);
 
-        Rectangle2D.Double triclinium = orientedLocalRect(rect, entrance, peristyleMargin - sideBands * 0.15, cursor + peristyleDepth * 0.18, sideBands * 0.9, peristyleDepth * 0.52);
-        Rectangle2D.Double oecus = orientedLocalRect(rect, entrance, peristyleMargin + peristyleWidth, cursor + peristyleDepth * 0.2, sideBands * 0.9, peristyleDepth * 0.5);
+        Rectangle2D.Double triclinium = orientedLocalRect(rect, planOrientation, peristyleMargin - sideBands * 0.15, cursor + peristyleDepth * 0.18, sideBands * 0.9, peristyleDepth * 0.52);
+        Rectangle2D.Double oecus = orientedLocalRect(rect, planOrientation, peristyleMargin + peristyleWidth, cursor + peristyleDepth * 0.2, sideBands * 0.9, peristyleDepth * 0.5);
         g2.setColor(new Color(222, 208, 182));
         g2.fill(triclinium);
         g2.fill(oecus);
 
-        Rectangle2D.Double culina = orientedLocalRect(rect, entrance, peristyleMargin + peristyleWidth * 0.66, cursor + peristyleDepth * 0.22, peristyleWidth * 0.28, peristyleDepth * 0.36);
-        Rectangle2D.Double bathSuite = orientedLocalRect(rect, entrance, peristyleMargin + peristyleWidth * 0.68, cursor + peristyleDepth * 0.64, peristyleWidth * 0.26, peristyleDepth * 0.32);
+        Rectangle2D.Double culina = orientedLocalRect(rect, planOrientation, peristyleMargin + peristyleWidth * 0.66, cursor + peristyleDepth * 0.22, peristyleWidth * 0.28, peristyleDepth * 0.36);
+        Rectangle2D.Double bathSuite = orientedLocalRect(rect, planOrientation, peristyleMargin + peristyleWidth * 0.68, cursor + peristyleDepth * 0.64, peristyleWidth * 0.26, peristyleDepth * 0.32);
         g2.setColor(new Color(207, 191, 165));
         g2.fill(culina);
         g2.setColor(new Color(196, 182, 158));
@@ -1053,11 +1236,11 @@ public class ByzantineCityBlockGenerator {
 
         cursor += peristyleDepth;
 
-        Rectangle2D.Double hortus = orientedLocalRect(rect, entrance, axialMargin, cursor, axialWidth, hortusDepth);
+        Rectangle2D.Double hortus = orientedLocalRect(rect, planOrientation, axialMargin, cursor, axialWidth, hortusDepth);
         g2.setColor(new Color(170, 192, 138));
         g2.fill(hortus);
 
-        Rectangle2D.Double pergola = orientedLocalRect(rect, entrance, axialMargin + axialWidth * 0.22, cursor + hortusDepth * 0.18, axialWidth * 0.56, hortusDepth * 0.28);
+        Rectangle2D.Double pergola = orientedLocalRect(rect, planOrientation, axialMargin + axialWidth * 0.22, cursor + hortusDepth * 0.18, axialWidth * 0.56, hortusDepth * 0.28);
         Rectangle2D.Double fountain = insetRect(hortus, axialWidth * 0.34, hortusDepth * 0.3);
         g2.setColor(new Color(158, 182, 120));
         g2.fill(pergola);
@@ -1070,15 +1253,15 @@ public class ByzantineCityBlockGenerator {
 
         cursor += hortusDepth;
 
-        Rectangle2D.Double serviceRange = orientedLocalRect(rect, entrance, 0, cursor, span, serviceDepth);
+        Rectangle2D.Double serviceRange = orientedLocalRect(rect, planOrientation, 0, cursor, span, serviceDepth);
         g2.setColor(new Color(210, 196, 168));
         g2.fill(serviceRange);
 
-        Rectangle2D.Double slaveQuarters = orientedLocalRect(rect, entrance, 0, cursor, sideBands, serviceDepth);
-        Rectangle2D.Double storage = orientedLocalRect(rect, entrance, span - sideBands, cursor, sideBands, serviceDepth);
-        Rectangle2D.Double serviceCourt = orientedLocalRect(rect, entrance, axialMargin, cursor + serviceDepth * 0.08, axialWidth * 0.5, serviceDepth * 0.62);
-        Rectangle2D.Double latrine = orientedLocalRect(rect, entrance, axialMargin + axialWidth * 0.56, cursor + serviceDepth * 0.2, axialWidth * 0.18, serviceDepth * 0.48);
-        Rectangle2D.Double postern = orientedLocalRect(rect, entrance, axialMargin + axialWidth * 0.32, cursor + serviceDepth * 0.72, axialWidth * 0.36, serviceDepth * 0.22);
+        Rectangle2D.Double slaveQuarters = orientedLocalRect(rect, planOrientation, 0, cursor, sideBands, serviceDepth);
+        Rectangle2D.Double storage = orientedLocalRect(rect, planOrientation, span - sideBands, cursor, sideBands, serviceDepth);
+        Rectangle2D.Double serviceCourt = orientedLocalRect(rect, planOrientation, axialMargin, cursor + serviceDepth * 0.08, axialWidth * 0.5, serviceDepth * 0.62);
+        Rectangle2D.Double latrine = orientedLocalRect(rect, planOrientation, axialMargin + axialWidth * 0.56, cursor + serviceDepth * 0.2, axialWidth * 0.18, serviceDepth * 0.48);
+        Rectangle2D.Double postern = orientedLocalRect(rect, planOrientation, axialMargin + axialWidth * 0.32, cursor + serviceDepth * 0.72, axialWidth * 0.36, serviceDepth * 0.22);
         g2.setColor(new Color(204, 188, 160));
         g2.fill(slaveQuarters);
         g2.fill(storage);
@@ -1098,6 +1281,16 @@ public class ByzantineCityBlockGenerator {
         g2.draw(postern);
         g2.draw(tabernaLeft);
         g2.draw(tabernaRight);
+
+        if (entrance != planOrientation) {
+            Rectangle2D.Double connector = createConnector(rect, vestibulum, entrance, 0.45);
+            if (connector != null) {
+                g2.setColor(WALKWAY_TONE);
+                g2.fill(connector);
+                g2.setColor(WALL_TONE);
+                g2.draw(connector);
+            }
+        }
 
         g2.dispose();
     }
@@ -2100,14 +2293,33 @@ public class ByzantineCityBlockGenerator {
 
     private Edge findEntranceSide(Parcel parcel) {
         Rectangle2D.Double rect = parcel.rect;
+
+        if (parcel.type == BuildingType.PRIVATE_HOUSE && parcel.orientation != null) {
+            Edge orientation = parcel.orientation;
+            Edge[] preference = new Edge[]{orientation, opposite(orientation), rotateClockwise(orientation), rotateCounterClockwise(orientation)};
+            for (Edge edge : preference) {
+                if (edgeHasAccess(rect, edge)) {
+                    return edge;
+                }
+            }
+        }
+
         Edge bestEdge = null;
         double bestScore = -1;
+        Edge orientation = parcel.orientation;
         for (Edge edge : Edge.values()) {
             double score = 0;
             if (touchesPerimeter(rect, edge)) {
                 score += edgeLength(rect, edge) * 2.0;
             }
             score += roadContactScore(rect, edge);
+            if (orientation != null) {
+                if (edge == orientation) {
+                    score += Math.max(rect.width, rect.height);
+                } else if (edge == opposite(orientation)) {
+                    score += Math.max(rect.width, rect.height) * 0.5;
+                }
+            }
             if (score > bestScore) {
                 bestScore = score;
                 bestEdge = edge;
@@ -2534,6 +2746,7 @@ public class ByzantineCityBlockGenerator {
     private static class Parcel {
         final Rectangle2D.Double rect;
         BuildingType type = BuildingType.UNASSIGNED;
+        Edge orientation;
 
         Parcel(Rectangle2D.Double rect) {
             this.rect = rect;
